@@ -299,7 +299,11 @@ proc parseExpr(this: Parser, precedence: int = 0, primary: bool = false): Node =
     of TK_LPAREN:
       result = Node(kind: NK_GROUPING, line: this.read().line, column: this.read().column)
 
+      this.expects({TK_LPAREN}): echo "Expected an opening bracket"
+
       result.groupingBody = this.parseExpr()
+
+      this.expects({TK_RPAREN}): echo "Expected a closing bracket"
     of TK_IDENTIFIER:
       result = Node(kind: NK_REFERENCE, line: this.read().line, column: this.read().column)
 
@@ -429,7 +433,7 @@ proc check(this: TypeChecker): void =
   this.output.group = GK_VOID
 
 when isMainModule:
-  let lexer = newLexer("let a: Int = 2 + 2; let b: String = \"awdwad\"; let c: String = b + \"Str\";")
+  let lexer = newLexer("let a: Int = (2 + (1 * 24)) - 52; let b: String = \"awdwad\"; let c: String = b + \"Str\";")
 
   lexer.tokenize()
 
