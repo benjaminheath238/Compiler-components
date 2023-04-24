@@ -142,7 +142,8 @@ template eos(this: Lexer, offset: int = 0): bool = (this.index + offset > high t
 template get(this: Lexer, offset: int = 0): char = (if this.eos(offset): '\0' else: this.input[this.index + offset])
 template jyn(this: Lexer): void = (this.start = this.index)
 template nxl(this: Lexer): void = (this.index.inc(); this.line.inc(); this.column = 1)
-template nxc(this: Lexer): void = (this.index.inc();this.column.inc())
+template nxc(this: Lexer): void = (this.index.inc(); this.column.inc())
+template bak(this: Lexer): void = (this.index.dec(); this.column.dec())
 template txt(this: Lexer, offset: int = -1): string = (this.input[this.start..this.index + offset])
 template add(this: Lexer, kind: TokenKind): void = (this.output.add(newToken(kind, this.txt(), (this.line, this.column - this.txt().len()))))
 template err(this: Lexer, msg: string = "Unexpected character"): void = (stderr.styledWrite(fgRed, "[Lexer]: ", msg, " '", $this.get(), "' at ", $this.line, ":", $this.column, "\n"); this.errors.inc())
@@ -227,18 +228,17 @@ proc tokenize(this: Lexer): void =
 
       this.add(TK_CHARACTER)
     of SYMBOL_CHARACTERS:
-      this.nxc()
-      
       while this.get() in SYMBOL_CHARACTERS:
-        if this.txt(0) in RESERVED_SYMBOLS:
-          this.nxc()
-        else:
-          break
+        this.nxc()
 
-      if this.txt().toUpper() in RESERVED_SYMBOLS:
-        this.add(RESERVED_SYMBOLS[this.txt().toUpper()])
+      while this.txt() notin RESERVED_SYMBOLS and this.start < this.index:
+        this.bak()
+
+      if this.txt() in RESERVED_SYMBOLS:
+        this.add(RESERVED_SYMBOLS[this.txt()])
       else:
-        this.add(TK_IDENTIFIER)
+        this.err()
+        this.nxc()
     of {'0'..'9'}:
       while this.get() in {'0'..'9', 'o', 'O', 'x', 'X', 'b', 'B', 'a'..'f', 'A'..'F'}:
         this.nxc()
@@ -288,7 +288,7 @@ type Node = ref object
 type Parser = ref object
   index: int
 
-  pos: tuple[line: int, column: int]
+  last: Token
 
   input: seq[Token]
   output: Node
@@ -333,12 +333,12 @@ proc newRegisterNode(
 
 proc newParser(
   input: seq[Token]
-): Parser = Parser(index: 0, input: input, output: newProgramNode(), errors: 0)
+): Parser = Parser(index: 0, last: input[0], input: input, output: newProgramNode(), errors: 0)
 
 template eos(this: Parser, offset: int = 0): bool = (this.index + offset > high this.input)
 template get(this: Parser, offset: int = 0): Token = (this.input[this.index + offset])
-template nxt(this: Parser): void = (this.index.inc(); (if not this.eos(): this.pos = this.get().pos))
-template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.get().lexeme, "' at ", $this.pos.line, ":", $this.pos.column, "\n"); this.errors.inc())
+template nxt(this: Parser): void = (this.index.inc(); (if not this.eos(): this.last = this.get()))
+template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.last.lexeme, "' at ", $this.last.pos.line, ":", $this.last.pos.column, "\n"); this.errors.inc())
 template mch(this: Parser, kinds: set[TokenKind]): bool = (this.get().kind in kinds)
 template pnk(this: Parser, kinds: set[TokenKind]): void = (while not this.eos() and not this.mch(kinds): this.nxt())
 template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if this.mch(kinds): (this.nxt()) else: (this.err(msg); this.pnk(kinds)))
@@ -377,7 +377,7 @@ proc parseExpr(this: Parser): Node =
 
   case this.get().kind:
   of TK_INTEGER:
-    result = newIntegerConstantNode(this.pos)
+    result = newIntegerConstantNode(this.last.pos)
 
     this.xpc({TK_INTEGER}, "Expected an integer literal")
 
@@ -387,7 +387,7 @@ proc parseExpr(this: Parser): Node =
       this.err("Failed to parse integer")
       result.integerValue = 0
   of TK_CHARACTER:
-    result = newCharacterConstantNode(this.pos)
+    result = newCharacterConstantNode(this.last.pos)
 
     this.xpc({TK_CHARACTER}, "Expected an character literal")
     
@@ -397,13 +397,13 @@ proc parseExpr(this: Parser): Node =
       this.err("Failed to parse character")
       result.characterValue = '\0'
   of TK_BOOLEAN:
-    result = newBooleanConstantNode(this.pos)
+    result = newBooleanConstantNode(this.last.pos)
 
     this.xpc({TK_BOOLEAN}, "Expected an boolean literal")
     
     result.booleanValue = this.get(-1).lexeme.toUpper() == "TRUE"
   of TK_LBRACK:
-    result = newRegisterNode(this.pos)
+    result = newRegisterNode(this.last.pos)
 
     this.xpc({TK_LBRACK}, "Expected an opening bracket before register")
     this.xpc({TK_INTEGER}, "Expected a register address")
@@ -428,7 +428,7 @@ proc parseStmt(this: Parser): Node =
 
   case this.get().kind:
   of INSTRUCTIONS:
-    result = newInstructionNode(this.pos)
+    result = newInstructionNode(this.last.pos)
 
     this.xpc(INSTRUCTIONS, "Expected an instruction name")
 
@@ -785,7 +785,7 @@ proc lex(input: (string, bool, string)): (seq[Token], bool, string) =
   let lexer = newLexer(input[0])
   
   lexer.tokenize()
-  
+
   return (lexer.output, lexer.errors > 0, "Failed to tokenize")
 
 proc parse(input: (seq[Token], bool, string)): (Node, bool, string) =
