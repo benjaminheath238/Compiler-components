@@ -1,5 +1,5 @@
-from std/tables import TableRef, toTable, newTable, toOrderedTable, contains, getOrDefault, pairs, `[]`, `[]=`
-from std/terminal import ForegroundColor, Style, styledWrite
+from std/tables import TableRef, toTable, newTable, toOrderedTable, contains, pairs, `[]`, `[]=`
+from std/terminal import ForegroundColor, styledWrite
 from std/strutils import toUpper, split, join, alignLeft, indent, isEmptyOrWhitespace, toHex
 from std/sequtils import toSeq, filter, map, concat, deduplicate
 from std/setutils import toSet
@@ -176,12 +176,12 @@ const RESERVED_LEXEMES = toTable({
   "JUMP":         TK_JUMP,
 })
 
-const RESERVED_CHARACTERS = RESERVED_LEXEMES.pairs()
-                                            .toSeq()
-                                            .map(x => x[0].toSeq())
-                                            .concat()
-                                            .deduplicate()
-                                            .toSet()
+const IDENTIFIER_CHARACTERS = RESERVED_LEXEMES.pairs()
+                                              .toSeq()
+                                              .map(x => x[0].toSeq())
+                                              .concat()
+                                              .deduplicate()
+                                              .toSet() + {'a'..'z', 'A'..'Z'}
 
 proc tokenize(this: Lexer): void =
   while not this.eos():
@@ -225,8 +225,8 @@ proc tokenize(this: Lexer): void =
         this.nxc()
 
       this.add(TK_INTEGER)
-    of RESERVED_CHARACTERS:
-      while this.get() in RESERVED_CHARACTERS + {'0'..'9', '_'}:
+    of IDENTIFIER_CHARACTERS:
+      while this.get() in IDENTIFIER_CHARACTERS + {'0'..'9', '_'}:
         this.nxc()
 
       if this.txt().toUpper() in RESERVED_LEXEMES:
@@ -242,11 +242,6 @@ type NodeKind = enum
 
   NK_INSTRUCTION
 
-  NK_TERNARY_ARGS
-  NK_BINARY_ARGS
-  NK_UNARY_ARGS
-  NK_NULLARY_ARGS
-
   NK_CONSTANT
 
 type Node = ref object
@@ -258,18 +253,7 @@ type Node = ref object
     programBody: seq[Node]
   of NK_INSTRUCTION:
     instructionIdentifier: tuple[name: string, kind: TokenKind]
-    instructionArguments: Node
-  of NK_TERNARY_ARGS:
-    ternaryArgs1: Node
-    ternaryArgs2: Node
-    ternaryArgs3: Node
-  of NK_BINARY_ARGS:
-    binaryArgs1: Node
-    binaryArgs2: Node
-  of NK_UNARY_ARGS:
-    unaryArgs1: Node
-  of NK_NULLARY_ARGS:
-    discard
+    instructionArguments: seq[Node]
   of NK_CONSTANT:
     case constantKind: TokenKind:
     of TK_INTEGER:
@@ -299,37 +283,8 @@ proc newInstructionNode(
   column: int,
 
   identifier: tuple[name: string, kind: TokenKind] = ("", TK_MOVE),
-  arguments: Node = nil
+  arguments: seq[Node] = newSeq[Node]()
 ): Node = Node(line: line, column: column, kind: NK_INSTRUCTION, instructionIdentifier: identifier, instructionArguments: arguments)
-
-proc newTernaryArgsNode(
-  line: int,
-  column: int,
-  
-  args1: Node = nil,
-  args2: Node = nil,
-  args3: Node = nil
-): Node = Node(line: line, column: column, kind: NK_TERNARY_ARGS, ternaryArgs1: args1, ternaryArgs2: args2, ternaryArgs3: args3)
-
-proc newBinaryArgsNode(
-  line: int,
-  column: int,
-  
-  args1: Node = nil,
-  args2: Node = nil
-): Node = Node(line: line, column: column, kind: NK_BINARY_ARGS, binaryArgs1: args1, binaryArgs2: args2)
-
-proc newUnaryArgsNode(
-  line: int,
-  column: int,
-
-  args1: Node = nil,
-): Node = Node(line: line, column: column, kind: NK_UNARY_ARGS, unaryArgs1: args1)
-
-proc newNullaryArgsNode(
-  line: int,
-  column: int
-): Node = Node(line: line, column: column, kind: NK_NULLARY_ARGS)
 
 proc newIntegerConstant(
   line: int,
@@ -425,34 +380,17 @@ proc parseStmt(this: Parser): Node =
   of INSTRUCTIONS:
     result = newInstructionNode(this.get().line, this.get().column)
 
-    this.xpc(INSTRUCTIONS, "Expected an opcode name")
+    this.xpc(INSTRUCTIONS, "Expected an instruction name")
 
     result.instructionIdentifier = (this.get(-1).lexeme, this.get(-1).kind)
 
     let arity = INSTRUCTION_ARITIES[result.instructionIdentifier.kind]
 
-    case arity:
-    of 0:
-      result.instructionArguments = newNullaryArgsNode(this.get().line, this.get().column)
-    of 1:
-      result.instructionArguments = newUnaryArgsNode(this.get().line, this.get().column)
+    for i in 0..<arity:
+      result.instructionArguments.add(this.parseExpr())
 
-      result.instructionArguments.unaryArgs1 = this.parseExpr()
-    of 2:
-      result.instructionArguments = newBinaryArgsNode(this.get().line, this.get().column)
-
-      result.instructionArguments.binaryArgs1 = this.parseExpr()
-      this.xpc({TK_COMMA}, "Expected a comma between arguments")
-      result.instructionArguments.binaryArgs2 = this.parseExpr()
-    of 3:
-      result.instructionArguments = newTernaryArgsNode(this.get().line, this.get().column)
-
-      result.instructionArguments.ternaryArgs1 = this.parseExpr()
-      this.xpc({TK_COMMA}, "Expected a comma between arguments")
-      result.instructionArguments.ternaryArgs2 = this.parseExpr()
-      this.xpc({TK_COMMA}, "Expected a comma between arguments")
-      result.instructionArguments.ternaryArgs3 = this.parseExpr()
-    else: this.err("Problematic Arity")
+      if i < arity - 1:
+        this.xpc({TK_COMMA}, "Expected a comma between arguments")
   else: this.err()
 
 proc parse(this: Parser): void =
@@ -494,29 +432,20 @@ const OPCODES = toTable({
   TK_JUMP:        byte(0x31),
 })
 
+const INSTRUCTION_WIDTH = 4
+
 proc assemble(this: Assembler, node: Node): seq[byte] =
   result = newSeq[byte]()
 
   case node.kind:
   of NK_INSTRUCTION:
     result.add(OPCODES[node.instructionIdentifier.kind])
-    result.add(this.assemble(node.instructionArguments))
-  of NK_TERNARY_ARGS:
-    result.add(this.assemble(node.ternaryArgs1))
-    result.add(this.assemble(node.ternaryArgs2))
-    result.add(this.assemble(node.ternaryArgs3))
-  of NK_BINARY_ARGS:
-    result.add(this.assemble(node.binaryArgs1))
-    result.add(this.assemble(node.binaryArgs2))
-    result.add(0x00)
-  of NK_UNARY_ARGS:
-    result.add(this.assemble(node.unaryArgs1))
-    result.add(0x00)
-    result.add(0x00)
-  of NK_NULLARY_ARGS:
-    result.add(0x00)
-    result.add(0x00)
-    result.add(0x00)
+    
+    for arg in node.instructionArguments:
+      result.add(this.assemble(arg))
+    
+    while result.len() < INSTRUCTION_WIDTH:
+      result.add(0x00)
   of NK_CONSTANT:
     case node.constantKind:
     of TK_INTEGER:    result.add(byte(node.integerValue))
@@ -542,8 +471,6 @@ proc newVirtualMachine(
 ): VirtualMachine = VirtualMachine(memory: newSeq[byte](0xFF), registers: newSeq[byte](0x0F), sides: newSeq[byte](0x06), input: input, errors: 0)
 
 const RIP = byte(0x0E)
-
-const INSTRUCTION_WIDTH = 4
 
 template rset(this: VirtualMachine, reg: SomeInteger, val: SomeInteger): void = this.registers[reg] = byte(val)
 template mset(this: VirtualMachine, mem: SomeInteger, val: SomeInteger): void = this.memory[mem] = byte(val)
@@ -771,8 +698,8 @@ proc parseShort(this: Options, item: string): void =
 
 proc help(this: Options): void =
   stdout.write("Usage:\n")
-  stdout.write(("Interpreter2 [options...] in").indent(2), "\n")
-  stdout.write(("in can be given in form --in=[...] or [...]").indent(2), "\n")
+  stdout.write(("Interpreter2 [options...] <in>").indent(2), "\n")
+  stdout.write(("Note: the parameter in can be given in form --in=[...] or [...]").indent(2), "\n")
   stdout.write("\n")
   stdout.write("Options:\n")
 
