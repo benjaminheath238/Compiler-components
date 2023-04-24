@@ -101,6 +101,9 @@ type TokenKind = enum
   TK_GOTO
   TK_JUMP
 
+  TK_RBRACK
+  TK_LBRACK
+
   TK_COMMA
 
 type Token = ref object
@@ -144,9 +147,14 @@ template txt(this: Lexer, offset: int = -1): string = (this.input[this.start..th
 template add(this: Lexer, kind: TokenKind): void = (this.output.add(newToken(kind, this.txt(), (this.line, this.column - this.txt().len()))))
 template err(this: Lexer, msg: string = "Unexpected character"): void = (stderr.styledWrite(fgRed, "[Lexer]: ", msg, " '", $this.get(), "' at ", $this.line, ":", $this.column, "\n"); this.errors.inc())
 
-const RESERVED_LEXEMES = toTable({
+const RESERVED_SYMBOLS = toTable({
+  "[":            TK_LBRACK,
+  "]":            TK_RBRACK,
+
   ",":            TK_COMMA,
-  
+})
+
+const RESERVED_LEXEMES = toTable({
   "TRUE":         TK_BOOLEAN,
   "FALSE":        TK_BOOLEAN,
   
@@ -174,12 +182,12 @@ const RESERVED_LEXEMES = toTable({
   "JUMP":         TK_JUMP,
 })
 
-const IDENTIFIER_CHARACTERS = RESERVED_LEXEMES.pairs()
-                                              .toSeq()
-                                              .map(x => x[0].toSeq())
-                                              .concat()
-                                              .deduplicate()
-                                              .toSet() + {'a'..'z', 'A'..'Z'}
+const SYMBOL_CHARACTERS = RESERVED_SYMBOLS.pairs()
+                                            .toSeq()
+                                            .map(x => x[0].toSeq())
+                                            .concat()
+                                            .deduplicate()
+                                            .toSet()
 
 proc tokenize(this: Lexer): void =
   while not this.eos():
@@ -218,13 +226,26 @@ proc tokenize(this: Lexer): void =
       this.nxc()
 
       this.add(TK_CHARACTER)
+    of SYMBOL_CHARACTERS:
+      this.nxc()
+      
+      while this.get() in SYMBOL_CHARACTERS:
+        if this.txt(0) in RESERVED_SYMBOLS:
+          this.nxc()
+        else:
+          break
+
+      if this.txt().toUpper() in RESERVED_SYMBOLS:
+        this.add(RESERVED_SYMBOLS[this.txt().toUpper()])
+      else:
+        this.add(TK_IDENTIFIER)
     of {'0'..'9'}:
       while this.get() in {'0'..'9', 'o', 'O', 'x', 'X', 'b', 'B', 'a'..'f', 'A'..'F'}:
         this.nxc()
 
       this.add(TK_INTEGER)
-    of IDENTIFIER_CHARACTERS:
-      while this.get() in IDENTIFIER_CHARACTERS + {'0'..'9', '_'}:
+    of {'a'..'z', 'A'..'Z'}:
+      while this.get() in {'a'..'z', 'A'..'Z', '0'..'9', '_'}:
         this.nxc()
 
       if this.txt().toUpper() in RESERVED_LEXEMES:
@@ -241,6 +262,7 @@ type NodeKind = enum
   NK_INSTRUCTION
 
   NK_CONSTANT
+  NK_REGISTER
 
 type Node = ref object
   pos: tuple[line: int, column: int]
@@ -260,9 +282,13 @@ type Node = ref object
     of TK_BOOLEAN:
       booleanValue: bool
     else: discard
+  of NK_REGISTER:
+    registerAddress: int
 
 type Parser = ref object
   index: int
+
+  pos: tuple[line: int, column: int]
 
   input: seq[Token]
   output: Node
@@ -281,23 +307,29 @@ proc newInstructionNode(
   arguments: seq[Node] = newSeq[Node]()
 ): Node = Node(pos: pos, kind: NK_INSTRUCTION, instructionIdentifier: identifier, instructionArguments: arguments)
 
-proc newIntegerConstant(
+proc newIntegerConstantNode(
   pos: tuple[line: int, column: int],
   
   value: int = 0
 ): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_INTEGER, integerValue: value)
 
-proc newCharacterConstant(
+proc newCharacterConstantNode(
   pos: tuple[line: int, column: int],
   
   value: char = '\0'
 ): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_CHARACTER, characterValue: value)
 
-proc newBooleanConstant(
+proc newBooleanConstantNode(
   pos: tuple[line: int, column: int],
   
   value: bool = false
 ): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_BOOLEAN, booleanValue: value)
+
+proc newRegisterNode(
+  pos: tuple[line: int, column: int],
+  
+  address: int = 0
+): Node = Node(pos: pos, kind: NK_REGISTER, registerAddress: address)
 
 proc newParser(
   input: seq[Token]
@@ -305,11 +337,11 @@ proc newParser(
 
 template eos(this: Parser, offset: int = 0): bool = (this.index + offset > high this.input)
 template get(this: Parser, offset: int = 0): Token = (this.input[this.index + offset])
-template nxt(this: Parser): void = (this.index.inc())
-template pos(this: Parser, offset: int = 0): (int, int) = (this.get(offset).pos)
-template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.get().lexeme, "' at ", $this.get().pos.line, ":", $this.get().pos.column, "\n"); this.errors.inc())
+template nxt(this: Parser): void = (this.index.inc(); (if not this.eos(): this.pos = this.get().pos))
+template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.get().lexeme, "' at ", $this.pos.line, ":", $this.pos.column, "\n"); this.errors.inc())
 template mch(this: Parser, kinds: set[TokenKind]): bool = (this.get().kind in kinds)
-template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if this.mch(kinds): (this.nxt()) else: (this.err(msg)))
+template pnk(this: Parser, kinds: set[TokenKind]): void = (while not this.eos() and not this.mch(kinds): this.nxt())
+template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if this.mch(kinds): (this.nxt()) else: (this.err(msg); this.pnk(kinds)))
 
 const INSTRUCTION_ARITIES = toTable({
   TK_MOVE:    2,
@@ -339,9 +371,13 @@ const INSTRUCTION_ARITIES = toTable({
 const INSTRUCTIONS = {TK_MOVE..TK_JUMP}
 
 proc parseExpr(this: Parser): Node =
+  if this.eos():
+    this.err("Could not parse expression, End of stream")
+    return nil
+
   case this.get().kind:
   of TK_INTEGER:
-    result = newIntegerConstant(this.pos())
+    result = newIntegerConstantNode(this.pos)
 
     this.xpc({TK_INTEGER}, "Expected an integer literal")
 
@@ -351,7 +387,7 @@ proc parseExpr(this: Parser): Node =
       this.err("Failed to parse integer")
       result.integerValue = 0
   of TK_CHARACTER:
-    result = newCharacterConstant(this.pos())
+    result = newCharacterConstantNode(this.pos)
 
     this.xpc({TK_CHARACTER}, "Expected an character literal")
     
@@ -361,17 +397,38 @@ proc parseExpr(this: Parser): Node =
       this.err("Failed to parse character")
       result.characterValue = '\0'
   of TK_BOOLEAN:
-    result = newBooleanConstant(this.pos())
+    result = newBooleanConstantNode(this.pos)
 
     this.xpc({TK_BOOLEAN}, "Expected an boolean literal")
     
     result.booleanValue = this.get(-1).lexeme.toUpper() == "TRUE"
-  else: this.err()
+  of TK_LBRACK:
+    result = newRegisterNode(this.pos)
+
+    this.xpc({TK_LBRACK}, "Expected an opening bracket before register")
+    this.xpc({TK_INTEGER}, "Expected a register address")
+
+    if this.get(-1).lexeme.isInteger():
+      result.registerAddress = this.get(-1).lexeme.asInteger()
+    else:
+      this.err("Failed to parse integer")
+      result.registerAddress = 0
+
+    this.xpc({TK_RBRACK}, "Expected a closing bracket after register")
+
+  else:
+    this.err()
+    this.pnk({TK_INTEGER, TK_CHARACTER, TK_BOOLEAN, TK_LBRACK})
+    return this.parseExpr()
 
 proc parseStmt(this: Parser): Node =
+  if this.eos():
+    this.err("Could not parse statement, End of stream")
+    return nil
+
   case this.get().kind:
   of INSTRUCTIONS:
-    result = newInstructionNode(this.pos())
+    result = newInstructionNode(this.pos)
 
     this.xpc(INSTRUCTIONS, "Expected an instruction name")
 
@@ -384,7 +441,10 @@ proc parseStmt(this: Parser): Node =
 
       if i < arity - 1:
         this.xpc({TK_COMMA}, "Expected a comma between arguments")
-  else: this.err()
+  else:
+    this.err()
+    this.pnk(INSTRUCTIONS)
+    return this.parseStmt()
 
 proc parse(this: Parser): void =
   while not this.eos():
@@ -445,6 +505,8 @@ proc assemble(this: Assembler, node: Node): seq[byte] =
     of TK_CHARACTER:  result.add(byte(node.characterValue))
     of TK_BOOLEAN:    result.add(if node.booleanValue: byte(1) else: byte(0))
     else: discard
+  of NK_REGISTER:
+    result.add(byte(node.registerAddress))
   else: this.err(node.pos)
 
 proc assemble(this: Assembler): void =
