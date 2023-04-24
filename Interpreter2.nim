@@ -108,8 +108,7 @@ type Token = ref object
   
   lexeme: string
   
-  line: int
-  column: int
+  pos: tuple[line: int, column: int]
 
 type Lexer = ref object
   index: int
@@ -127,11 +126,10 @@ proc newToken(
   
   lexeme: string,
   
-  line: int,
-  column: int,
-): Token = Token(kind: kind, lexeme: lexeme, line: line, column: column)
+  pos: tuple[line: int, column: int]
+): Token = Token(kind: kind, lexeme: lexeme, pos: pos)
 
-proc `$`(this: Token): string = fmt("({this.kind}, {this.lexeme}, {this.line}:{this.column})")
+proc `$`(this: Token): string = fmt("({this.kind}, {this.lexeme}, {this.pos.line}:{this.pos.column})")
 
 proc newLexer(
   input: string
@@ -143,7 +141,7 @@ template jyn(this: Lexer): void = (this.start = this.index)
 template nxl(this: Lexer): void = (this.index.inc(); this.line.inc(); this.column = 1)
 template nxc(this: Lexer): void = (this.index.inc();this.column.inc())
 template txt(this: Lexer, offset: int = -1): string = (this.input[this.start..this.index + offset])
-template add(this: Lexer, kind: TokenKind): void = (this.output.add(newToken(kind, this.txt(), this.line, this.column - this.txt().len())))
+template add(this: Lexer, kind: TokenKind): void = (this.output.add(newToken(kind, this.txt(), (this.line, this.column - this.txt().len()))))
 template err(this: Lexer, msg: string = "Unexpected character"): void = (stderr.styledWrite(fgRed, "[Lexer]: ", msg, " '", $this.get(), "' at ", $this.line, ":", $this.column, "\n"); this.errors.inc())
 
 const RESERVED_LEXEMES = toTable({
@@ -245,8 +243,7 @@ type NodeKind = enum
   NK_CONSTANT
 
 type Node = ref object
-  line: int
-  column: int
+  pos: tuple[line: int, column: int]
 
   case kind: NodeKind:
   of NK_PROGRAM:
@@ -272,49 +269,45 @@ type Parser = ref object
   errors: int
 
 proc newProgramNode(
-  line: int,
-  column: int,
+  pos: tuple[line: int, column: int] = (0, 0),
   
   body: seq[Node] = newSeq[Node]()
-): Node = Node(line: line, column: column, kind: NK_PROGRAM, programBody: body)
+): Node = Node(pos: pos, kind: NK_PROGRAM, programBody: body)
 
 proc newInstructionNode(
-  line: int,
-  column: int,
-
+  pos: tuple[line: int, column: int],
+  
   identifier: tuple[name: string, kind: TokenKind] = ("", TK_MOVE),
   arguments: seq[Node] = newSeq[Node]()
-): Node = Node(line: line, column: column, kind: NK_INSTRUCTION, instructionIdentifier: identifier, instructionArguments: arguments)
+): Node = Node(pos: pos, kind: NK_INSTRUCTION, instructionIdentifier: identifier, instructionArguments: arguments)
 
 proc newIntegerConstant(
-  line: int,
-  column: int,
+  pos: tuple[line: int, column: int],
   
   value: int = 0
-): Node = Node(line: line, column: column, kind: NK_CONSTANT, constantKind: TK_INTEGER, integerValue: value)
+): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_INTEGER, integerValue: value)
 
 proc newCharacterConstant(
-  line: int,
-  column: int,
+  pos: tuple[line: int, column: int],
   
   value: char = '\0'
-): Node = Node(line: line, column: column, kind: NK_CONSTANT, constantKind: TK_CHARACTER, characterValue: value)
+): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_CHARACTER, characterValue: value)
 
 proc newBooleanConstant(
-  line: int,
-  column: int,
+  pos: tuple[line: int, column: int],
   
   value: bool = false
-): Node = Node(line: line, column: column, kind: NK_CONSTANT, constantKind: TK_BOOLEAN, booleanValue: value)
+): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_BOOLEAN, booleanValue: value)
 
 proc newParser(
   input: seq[Token]
-): Parser = Parser(index: 0, input: input, output: newProgramNode(0, 0), errors: 0)
+): Parser = Parser(index: 0, input: input, output: newProgramNode(), errors: 0)
 
 template eos(this: Parser, offset: int = 0): bool = (this.index + offset > high this.input)
 template get(this: Parser, offset: int = 0): Token = (this.input[this.index + offset])
 template nxt(this: Parser): void = (this.index.inc())
-template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.get().lexeme, "' at ", $this.get().line, ":", $this.get().column, "\n"); this.errors.inc())
+template pos(this: Parser, offset: int = 0): (int, int) = (this.get(offset).pos)
+template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.get().lexeme, "' at ", $this.get().pos.line, ":", $this.get().pos.column, "\n"); this.errors.inc())
 template mch(this: Parser, kinds: set[TokenKind]): bool = (this.get().kind in kinds)
 template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if this.mch(kinds): (this.nxt()) else: (this.err(msg)))
 
@@ -348,7 +341,7 @@ const INSTRUCTIONS = {TK_MOVE..TK_JUMP}
 proc parseExpr(this: Parser): Node =
   case this.get().kind:
   of TK_INTEGER:
-    result = newIntegerConstant(this.get().line, this.get().column)
+    result = newIntegerConstant(this.pos())
 
     this.xpc({TK_INTEGER}, "Expected an integer literal")
 
@@ -358,7 +351,7 @@ proc parseExpr(this: Parser): Node =
       this.err("Failed to parse integer")
       result.integerValue = 0
   of TK_CHARACTER:
-    result = newCharacterConstant(this.get().line, this.get().column)
+    result = newCharacterConstant(this.pos())
 
     this.xpc({TK_CHARACTER}, "Expected an character literal")
     
@@ -368,7 +361,7 @@ proc parseExpr(this: Parser): Node =
       this.err("Failed to parse character")
       result.characterValue = '\0'
   of TK_BOOLEAN:
-    result = newBooleanConstant(this.get().line, this.get().column)
+    result = newBooleanConstant(this.pos())
 
     this.xpc({TK_BOOLEAN}, "Expected an boolean literal")
     
@@ -378,7 +371,7 @@ proc parseExpr(this: Parser): Node =
 proc parseStmt(this: Parser): Node =
   case this.get().kind:
   of INSTRUCTIONS:
-    result = newInstructionNode(this.get().line, this.get().column)
+    result = newInstructionNode(this.pos())
 
     this.xpc(INSTRUCTIONS, "Expected an instruction name")
 
@@ -406,7 +399,7 @@ proc newAssembler(
   input: Node
 ): Assembler = Assembler(input: input, output: newSeq[byte](), errors: 0)
 
-template err(this: Assembler, line: int, column: int, msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Assembler]: ", msg, " at ", $line, ":", $column, "\n"); this.errors.inc())
+template err(this: Assembler, pos: tuple[line: int, column: int], msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Assembler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
 
 const OPCODES = toTable({
   TK_MOVE:        byte(0x00),
@@ -452,7 +445,7 @@ proc assemble(this: Assembler, node: Node): seq[byte] =
     of TK_CHARACTER:  result.add(byte(node.characterValue))
     of TK_BOOLEAN:    result.add(if node.booleanValue: byte(1) else: byte(0))
     else: discard
-  else: this.err(node.line, node.column)
+  else: this.err(node.pos)
 
 proc assemble(this: Assembler): void =
   for child in this.input.programBody:
@@ -720,7 +713,7 @@ proc parse(this: Options): void =
 
 proc exists(input: string): (string, bool, string) =
   if input.fileExists():
-    return (input.readFile(), false, "")
+    return (input, false, "")
   else:
     return ("", true, "File " & input & " does not exist")
 
@@ -734,7 +727,7 @@ proc lex(input: (string, bool, string)): (seq[Token], bool, string) =
   return (lexer.output, lexer.errors > 0, "Failed to tokenize")
 
 proc parse(input: (seq[Token], bool, string)): (Node, bool, string) =
-  if input[1]: return (newProgramNode(0, 0), input[1], input[2])
+  if input[1]: return (newProgramNode(), input[1], input[2])
   
   let parser = newParser(input[0])
 
@@ -751,10 +744,10 @@ proc assemble(input: (Node, bool, string)): (seq[byte], bool, string) =
 
   return (assembler.output, assembler.errors > 0, "Failed to assemble")
 
-proc read(input: string): (seq[byte], bool, string) =
-  if not input.fileExists(): return (newSeq[byte](), true, "File " & input & " does not exist")
+proc read(input: (string, bool, string)): (seq[byte], bool, string) =
+  if input[1]: return (newSeq[byte](), input[1], input[2])
   
-  let file = input.open()
+  let file = input[0].open()
 
   var bytes = newSeq[byte](file.getFileSize())
 
@@ -764,6 +757,11 @@ proc read(input: string): (seq[byte], bool, string) =
     result = (bytes, false, "")
 
   file.close()
+
+proc text(input: (seq[byte], bool, string)): (string, bool, string) =
+  if input[1]: return ("", input[1], input[2])
+
+  result = (input[0].map(x => char(x)).join(""), input[1], input[2])
 
 proc write(input: (seq[byte], bool, string), output: string): (bool, string) =
   if input[1]: return (input[1], input[2])
@@ -810,6 +808,8 @@ when isMainModule:
   elif options.has("r"):
     options.get("in")
            .exists()
+           .read()
+           .text()
            .lex()
            .parse()
            .assemble()
@@ -818,6 +818,8 @@ when isMainModule:
   elif options.has("c"):
     options.get("in")
            .exists()
+           .read()
+           .text()
            .lex()
            .parse()
            .assemble()
@@ -825,6 +827,7 @@ when isMainModule:
            .display()
   elif options.has("e"):
     options.get("in")
+           .exists()
            .read()
            .interpret()
            .display()
@@ -833,6 +836,8 @@ when isMainModule:
     of ".rasm":
       options.get("in")
              .exists()
+             .read()
+             .text()
              .lex()
              .parse()
              .assemble()
@@ -840,6 +845,7 @@ when isMainModule:
              .display()
     of ".rsec":
       options.get("in")
+             .exists()
              .read()
              .debug()
              .display()
