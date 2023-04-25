@@ -1,12 +1,13 @@
 from std/tables import TableRef, toTable, newTable, toOrderedTable, contains, pairs, `[]`, `[]=`
 from std/terminal import ForegroundColor, styledWrite
-from std/strutils import toUpper, split, join, alignLeft, indent, isEmptyOrWhitespace, toHex
+from std/strutils import toUpper, split, join, alignLeft, indent, isEmptyOrWhitespace, toHex, contains
 from std/sequtils import toSeq, filter, map, concat, deduplicate
 from std/setutils import toSet
 from std/os import commandLineParams, changeFileExt, splitFile, fileExists
 from std/parseutils import parseInt, parseHex, parseOct, parseBin
 from std/strformat import fmt
 from std/sugar import `=>`
+from std/json import `%`, `$`
 
 proc isInteger(input: string): bool =
   var value = 0
@@ -68,43 +69,86 @@ proc asCharacter(input: string): char =
     return input[1]
 
 type TokenKind = enum
-  TK_IDENTIFIER
-  
-  TK_INTEGER
-  TK_CHARACTER
-  TK_BOOLEAN
+  TK_C_IDENTIFIER
+  TK_C_INTEGER
+  TK_C_CHARACTER
+  TK_C_BOOLEAN
 
-  TK_MOVE
-  TK_READ
-  TK_WRITE
-  TK_LOAD
-  TK_STORE
+  # Keywords
+  TK_K_IF
+  TK_K_ELSE
+
+  # Arithmetic
+  TK_O_ADD
+  TK_O_SUB
+  TK_O_MUL
+  TK_O_DIV
+  TK_O_MOD
+  
+  # Equality
+  TK_O_EQUAL
+  TK_O_NOT_EQUAL
+  TK_O_MORE
+  TK_O_MORE_THAN_EQUAL
+  TK_O_LESS
+  TK_O_LESS_THAN_EQUAL
+
+  # Shift
+  TK_O_SHL
+  TK_O_SHR
+  
+  # Bitwise or Logical
+  TK_O_NOT
+  TK_O_AND
+  TK_O_XOR
+  TK_O_OR
+
+  # Memory, Register and Sides
+  TK_I_MOVE
+  TK_I_READ
+  TK_I_WRITE
+  TK_I_LOAD
+  TK_I_STORE
   
   # Arithmetic
-  TK_ADD
-  TK_SUB
-  TK_MUL
-  TK_DIV
-  TK_MOD
+  TK_I_ADD
+  TK_I_SUB
+  TK_I_MUL
+  TK_I_DIV
+  TK_I_MOD
   
+  # Equality
+  TK_I_EQUAL
+  TK_I_NOT_EQUAL
+  TK_I_MORE
+  TK_I_MORE_THAN_EQUAL
+  TK_I_LESS
+  TK_I_LESS_THAN_EQUAL
+
   # Shift
-  TK_SHL
-  TK_SHR
+  TK_I_SHL
+  TK_I_SHR
   
-  # Bitwise
-  TK_NOT
-  TK_AND
-  TK_XOR
-  TK_OR
+  # Bitwise or Logical
+  TK_I_NOT
+  TK_I_AND
+  TK_I_XOR
+  TK_I_OR
 
   # Control Flow
-  TK_GOTO
-  TK_JUMP
+  TK_I_GOTO
+  TK_I_JUMP
 
-  TK_RBRACK
-  TK_LBRACK
+  # VM Control
+  TK_I_HALT
+  TK_I_NOOP
 
-  TK_COMMA
+  TK_P_RBRACK
+  TK_P_LBRACK
+  TK_P_RBRACE
+  TK_P_LBRACE
+
+  TK_P_COMMA
 
 type Token = ref object
   kind: TokenKind
@@ -148,47 +192,68 @@ template txt(this: Lexer, offset: int = -1): string = (this.input[this.start..th
 template add(this: Lexer, kind: TokenKind): void = (this.output.add(newToken(kind, this.txt(), (this.line, this.column - this.txt().len()))))
 template err(this: Lexer, msg: string = "Unexpected character"): void = (stderr.styledWrite(fgRed, "[Lexer]: ", msg, " '", $this.get(), "' at ", $this.line, ":", $this.column, "\n"); this.errors.inc())
 
-const RESERVED_SYMBOLS = toTable({
-  "[":            TK_LBRACK,
-  "]":            TK_RBRACK,
-
-  ",":            TK_COMMA,
-})
-
 const RESERVED_LEXEMES = toTable({
-  "TRUE":         TK_BOOLEAN,
-  "FALSE":        TK_BOOLEAN,
-  
-  "MOVE":         TK_MOVE,
-  "READ":         TK_READ,
-  "WRITE":        TK_WRITE,
-  "LOAD":         TK_LOAD,
-  "STORE":        TK_STORE,
-  
-  "ADD":          TK_ADD,
-  "SUB":          TK_SUB,
-  "MUL":          TK_MUL,
-  "DIV":          TK_DIV,
-  "MOD":          TK_MOD,
-  
-  "SHL":          TK_SHL,
-  "SHR":          TK_SHR,
-  
-  "NOT":          TK_NOT,
-  "AND":          TK_AND,
-  "XOR":          TK_XOR,
-  "OR":           TK_OR,
-
-  "GOTO":         TK_GOTO,
-  "JUMP":         TK_JUMP,
+  "TRUE":             TK_C_BOOLEAN,
+  "FALSE":            TK_C_BOOLEAN,
+  "IF":               TK_K_IF,
+  "ELSE":             TK_K_ELSE,
+  "+":                TK_O_ADD,
+  "-":                TK_O_SUB,
+  "*":                TK_O_MUL,
+  "/":                TK_O_DIV,
+  "%":                TK_O_MOD,
+  "==":               TK_O_EQUAL,
+  "!=":               TK_O_NOT_EQUAL,
+  ">":                TK_O_MORE,
+  ">=":               TK_O_MORE_THAN_EQUAL,
+  "<":                TK_O_LESS,
+  "<=":               TK_O_LESS_THAN_EQUAL,
+  "<<":               TK_O_SHL,
+  ">>":               TK_O_SHR,
+  "!":                TK_O_NOT,
+  "&":                TK_O_AND,
+  "^":                TK_O_XOR,
+  "|":                TK_O_OR,
+  "MOVE":             TK_I_MOVE,
+  "READ":             TK_I_READ,
+  "WRITE":            TK_I_WRITE,
+  "LOAD":             TK_I_LOAD,
+  "STORE":            TK_I_STORE,
+  "ADD":              TK_I_ADD,
+  "SUB":              TK_I_SUB,
+  "MUL":              TK_I_MUL,
+  "DIV":              TK_I_DIV,
+  "MOD":              TK_I_MOD,
+  "EQUAL":            TK_I_EQUAL,
+  "NOT_EQUAL":        TK_I_NOT_EQUAL,
+  "MORE":             TK_I_MORE,
+  "MORE_THAN_EQUAL":  TK_I_MORE_THAN_EQUAL,
+  "LESS":             TK_I_LESS,
+  "LESS_THAN_EQUAL":  TK_I_LESS_THAN_EQUAL,
+  "SHL":              TK_I_SHL,
+  "SHR":              TK_I_SHR,
+  "NOT":              TK_I_NOT,
+  "AND":              TK_I_AND,
+  "XOR":              TK_I_XOR,
+  "OR":               TK_I_OR,
+  "GOTO":             TK_I_GOTO,
+  "JUMP":             TK_I_JUMP,
+  "HALT":             TK_I_HALT,
+  "NOOP":             TK_I_NOOP,
+  "[":                TK_P_LBRACK,
+  "]":                TK_P_RBRACK,
+  "{":                TK_P_LBRACE,
+  "}":                TK_P_RBRACE,
+  ",":                TK_P_COMMA,
 })
 
-const SYMBOL_CHARACTERS = RESERVED_SYMBOLS.pairs()
-                                            .toSeq()
-                                            .map(x => x[0].toSeq())
-                                            .concat()
-                                            .deduplicate()
-                                            .toSet()
+const SYMBOL_CHARACTERS = RESERVED_LEXEMES.pairs()
+                                          .toSeq()
+                                          .filter(x => not x[0].contains({'a'..'z', 'A'..'Z', '0'..'9'}))
+                                          .map(x => x[0].toSeq())
+                                          .concat()
+                                          .deduplicate()
+                                          .toSet()
 
 proc tokenize(this: Lexer): void =
   while not this.eos():
@@ -226,24 +291,24 @@ proc tokenize(this: Lexer): void =
             this.nxc()
       this.nxc()
 
-      this.add(TK_CHARACTER)
+      this.add(TK_C_CHARACTER)
     of SYMBOL_CHARACTERS:
       while this.get() in SYMBOL_CHARACTERS:
         this.nxc()
 
-      while this.txt() notin RESERVED_SYMBOLS and this.start < this.index:
+      while this.txt() notin RESERVED_LEXEMES and this.start < this.index:
         this.bak()
 
-      if this.txt() in RESERVED_SYMBOLS:
-        this.add(RESERVED_SYMBOLS[this.txt()])
+      if this.txt() in RESERVED_LEXEMES:
+        this.add(RESERVED_LEXEMES[this.txt()])
       else:
         this.err()
         this.nxc()
     of {'0'..'9'}:
-      while this.get() in {'0'..'9', 'o', 'O', 'x', 'X', 'b', 'B', 'a'..'f', 'A'..'F'}:
+      while this.get() in {'0'..'9', 'o', 'O', 'x', 'X', 'b', 'B', 'a'..'f', 'A'..'F', '_'}:
         this.nxc()
 
-      this.add(TK_INTEGER)
+      this.add(TK_C_INTEGER)
     of {'a'..'z', 'A'..'Z'}:
       while this.get() in {'a'..'z', 'A'..'Z', '0'..'9', '_'}:
         this.nxc()
@@ -251,15 +316,20 @@ proc tokenize(this: Lexer): void =
       if this.txt().toUpper() in RESERVED_LEXEMES:
         this.add(RESERVED_LEXEMES[this.txt().toUpper()])
       else:
-        this.add(TK_IDENTIFIER)
+        this.add(TK_C_IDENTIFIER)
     else:
       this.err()
       this.nxc()
 
 type NodeKind = enum
-  NK_PROGRAM
+  NK_BLOCK
+
+  NK_IF
 
   NK_INSTRUCTION
+  
+  NK_BINARY
+  NK_UNARY
 
   NK_CONSTANT
   NK_REGISTER
@@ -268,18 +338,29 @@ type Node = ref object
   pos: tuple[line: int, column: int]
 
   case kind: NodeKind:
-  of NK_PROGRAM:
-    programBody: seq[Node]
+  of NK_BLOCK:
+    blockBody: seq[Node]
+  of NK_IF:
+    ifCondition: Node
+    ifBody: Node
+    elseBody: Node
   of NK_INSTRUCTION:
-    instructionIdentifier: tuple[name: string, kind: TokenKind]
+    instructionIdentifier: TokenKind
     instructionArguments: seq[Node]
+  of NK_BINARY:
+    bopOperand1: Node
+    bopOperator: TokenKind
+    bopOperand2: Node
+  of NK_UNARY:
+    uopOperator: TokenKind
+    uopOperand1: Node
   of NK_CONSTANT:
     case constantKind: TokenKind:
-    of TK_INTEGER:
+    of TK_C_INTEGER:
       integerValue: int
-    of TK_CHARACTER:
+    of TK_C_CHARACTER:
       characterValue: char
-    of TK_BOOLEAN:
+    of TK_C_BOOLEAN:
       booleanValue: bool
     else: discard
   of NK_REGISTER:
@@ -294,36 +375,59 @@ type Parser = ref object
   output: Node
   errors: int
 
-proc newProgramNode(
+proc newBlockNode(
   pos: tuple[line: int, column: int] = (0, 0),
   
   body: seq[Node] = newSeq[Node]()
-): Node = Node(pos: pos, kind: NK_PROGRAM, programBody: body)
+): Node = Node(pos: pos, kind: NK_BLOCK, blockBody: body)
+
+proc newIfNode(
+  pos: tuple[line: int, column: int],
+  
+  condition: Node = nil,
+  body: Node = nil,
+  elseBody: Node = nil,
+): Node = Node(pos: pos, kind: NK_IF, ifCondition: condition, ifBody: body, elseBody: body)
 
 proc newInstructionNode(
   pos: tuple[line: int, column: int],
   
-  identifier: tuple[name: string, kind: TokenKind] = ("", TK_MOVE),
+  identifier: TokenKind = TK_I_NOOP,
   arguments: seq[Node] = newSeq[Node]()
 ): Node = Node(pos: pos, kind: NK_INSTRUCTION, instructionIdentifier: identifier, instructionArguments: arguments)
+
+proc newBinaryNode(
+  pos: tuple[line: int, column: int],
+
+  operand1: Node = nil,
+  operator: TokenKind = TK_O_ADD,
+  operand2: Node = nil
+): Node = Node(pos: pos, kind: NK_BINARY, bopOperand1: operand1, bopOperator: operator, bopOperand2: operand2)
+
+proc newUnaryNode(
+  pos: tuple[line: int, column: int],
+
+  operator: TokenKind = TK_O_ADD,
+  operand1: Node = nil,
+): Node = Node(pos: pos, kind: NK_UNARY, uopOperator: operator, uopOperand1: operand1)
 
 proc newIntegerConstantNode(
   pos: tuple[line: int, column: int],
   
   value: int = 0
-): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_INTEGER, integerValue: value)
+): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_C_INTEGER, integerValue: value)
 
 proc newCharacterConstantNode(
   pos: tuple[line: int, column: int],
   
   value: char = '\0'
-): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_CHARACTER, characterValue: value)
+): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_C_CHARACTER, characterValue: value)
 
 proc newBooleanConstantNode(
   pos: tuple[line: int, column: int],
   
   value: bool = false
-): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_BOOLEAN, booleanValue: value)
+): Node = Node(pos: pos, kind: NK_CONSTANT, constantKind: TK_C_BOOLEAN, booleanValue: value)
 
 proc newRegisterNode(
   pos: tuple[line: int, column: int],
@@ -333,7 +437,7 @@ proc newRegisterNode(
 
 proc newParser(
   input: seq[Token]
-): Parser = Parser(index: 0, last: input[0], input: input, output: newProgramNode(), errors: 0)
+): Parser = Parser(index: 0, last: input[0], input: input, output: newBlockNode(), errors: 0)
 
 template eos(this: Parser, offset: int = 0): bool = (this.index + offset > high this.input)
 template get(this: Parser, offset: int = 0): Token = (this.input[this.index + offset])
@@ -344,82 +448,133 @@ template pnk(this: Parser, kinds: set[TokenKind]): void = (while not this.eos() 
 template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if this.mch(kinds): (this.nxt()) else: (this.err(msg); this.pnk(kinds)))
 
 const INSTRUCTION_ARITIES = toTable({
-  TK_MOVE:    2,
-  TK_READ:    2,
-  TK_WRITE:   2,
-  TK_LOAD:    2,
-  TK_STORE:   2,
-  
-  TK_ADD:     3,
-  TK_SUB:     3,
-  TK_MUL:     3,
-  TK_DIV:     3,
-  TK_MOD:     3,
-  
-  TK_SHL:     3,
-  TK_SHR:     3,
-
-  TK_NOT:     2,
-  TK_AND:     3,
-  TK_XOR:     3,
-  TK_OR:      3,
-
-  TK_GOTO:    1,
-  TK_JUMP:    2,
+  TK_I_MOVE:            2,
+  TK_I_READ:            2,
+  TK_I_WRITE:           2,
+  TK_I_LOAD:            2,
+  TK_I_STORE:           2,
+  TK_I_ADD:             3,
+  TK_I_SUB:             3,
+  TK_I_MUL:             3,
+  TK_I_DIV:             3,
+  TK_I_MOD:             3,
+  TK_I_EQUAL:           3,
+  TK_I_NOT_EQUAL:       3,
+  TK_I_MORE:            3,
+  TK_I_MORE_THAN_EQUAL: 3,
+  TK_I_LESS:            3,
+  TK_I_LESS_THAN_EQUAL: 3,
+  TK_I_SHL:             3,
+  TK_I_SHR:             3,
+  TK_I_NOT:             2,
+  TK_I_AND:             3,
+  TK_I_XOR:             3,
+  TK_I_OR:              3,
+  TK_I_GOTO:            1,
+  TK_I_JUMP:            2,
+  TK_I_HALT:            0,
+  TK_I_NOOP:            0,
 })
 
-const INSTRUCTIONS = {TK_MOVE..TK_JUMP}
+const OPERATOR_PROPERTIES = toTable({
+  TK_O_ADD:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_SUB:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_MUL:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_DIV:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_MOD:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_EQUAL:             (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_NOT_EQUAL:         (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_MORE:              (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_MORE_THAN_EQUAL:   (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_LESS:              (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_LESS_THAN_EQUAL:   (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_SHL:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_SHR:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_NOT:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_AND:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_XOR:               (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+  TK_O_OR:                (bop: (isRightAssociative: false, precedence: 0), uop: (precedence: 0)),
+})
 
-proc parseExpr(this: Parser): Node =
+const INSTRUCTIONS = {TK_I_MOVE..TK_I_NOOP}
+const BOPERATORS = {TK_O_ADD..TK_O_OR}
+const UOPERATORS = {TK_O_ADD, TK_O_SUB, TK_O_NOT}
+
+proc parseExpr(this: Parser, precedence: int = 0, primary: bool = false): Node =
   if this.eos():
     this.err("Could not parse expression, End of stream")
     return nil
 
-  case this.get().kind:
-  of TK_INTEGER:
-    result = newIntegerConstantNode(this.last.pos)
+  if primary:
+    case this.get().kind:
+    of TK_C_INTEGER:
+      result = newIntegerConstantNode(this.last.pos)
 
-    this.xpc({TK_INTEGER}, "Expected an integer literal")
+      this.xpc({TK_C_INTEGER}, "Expected an integer literal")
 
-    if this.get(-1).lexeme.isInteger():
-      result.integerValue = this.get(-1).lexeme.asInteger()
+      if this.get(-1).lexeme.isInteger():
+        result.integerValue = this.get(-1).lexeme.asInteger()
+      else:
+        this.err("Failed to parse integer")
+        result.integerValue = 0
+    of TK_C_CHARACTER:
+      result = newCharacterConstantNode(this.last.pos)
+
+      this.xpc({TK_C_CHARACTER}, "Expected an character literal")
+      
+      if this.get(-1).lexeme.isCharacter():
+        result.characterValue = this.get(-1).lexeme.asCharacter()
+      else:
+        this.err("Failed to parse character")
+        result.characterValue = '\0'
+    of TK_C_BOOLEAN:
+      result = newBooleanConstantNode(this.last.pos)
+
+      this.xpc({TK_C_BOOLEAN}, "Expected an boolean literal")
+      
+      result.booleanValue = this.get(-1).lexeme.toUpper() == "TRUE"
+    of UOPERATORS:
+      result = newUnaryNode(this.last.pos)
+
+      this.xpc(UOPERATORS, "Expected an unary operator")
+
+      result.uopOperator = this.get(-1).kind
+
+      result.uopOperand1 = this.parseExpr(precedence=OPERATOR_PROPERTIES[result.uopOperator].uop.precedence)
+    of TK_P_LBRACK:
+      result = newRegisterNode(this.last.pos)
+
+      this.xpc({TK_P_LBRACK}, "Expected an opening bracket before register")
+      this.xpc({TK_C_INTEGER}, "Expected a register address")
+
+      if this.get(-1).lexeme.isInteger():
+        result.registerAddress = this.get(-1).lexeme.asInteger()
+      else:
+        this.err("Failed to parse integer")
+        result.registerAddress = 0
+
+      this.xpc({TK_P_RBRACK}, "Expected a closing bracket after register")
+
     else:
-      this.err("Failed to parse integer")
-      result.integerValue = 0
-  of TK_CHARACTER:
-    result = newCharacterConstantNode(this.last.pos)
-
-    this.xpc({TK_CHARACTER}, "Expected an character literal")
-    
-    if this.get(-1).lexeme.isCharacter():
-      result.characterValue = this.get(-1).lexeme.asCharacter()
-    else:
-      this.err("Failed to parse character")
-      result.characterValue = '\0'
-  of TK_BOOLEAN:
-    result = newBooleanConstantNode(this.last.pos)
-
-    this.xpc({TK_BOOLEAN}, "Expected an boolean literal")
-    
-    result.booleanValue = this.get(-1).lexeme.toUpper() == "TRUE"
-  of TK_LBRACK:
-    result = newRegisterNode(this.last.pos)
-
-    this.xpc({TK_LBRACK}, "Expected an opening bracket before register")
-    this.xpc({TK_INTEGER}, "Expected a register address")
-
-    if this.get(-1).lexeme.isInteger():
-      result.registerAddress = this.get(-1).lexeme.asInteger()
-    else:
-      this.err("Failed to parse integer")
-      result.registerAddress = 0
-
-    this.xpc({TK_RBRACK}, "Expected a closing bracket after register")
-
+      this.err()
+      this.pnk({TK_C_INTEGER, TK_C_CHARACTER, TK_C_BOOLEAN, TK_P_LBRACK})
+      return this.parseExpr()
   else:
-    this.err()
-    this.pnk({TK_INTEGER, TK_CHARACTER, TK_BOOLEAN, TK_LBRACK})
-    return this.parseExpr()
+    result = this.parseExpr(primary=true)
+
+    while not this.eos() and this.mch(BOPERATORS) and OPERATOR_PROPERTIES[this.get().kind].bop.precedence >= precedence:
+      result = newBinaryNode(this.last.pos, operand1=result)
+
+      this.xpc(BOPERATORS, "Expected a binary operator")
+
+      result.bopOperator = this.get(-1).kind
+
+      result.bopOperand2 = this.parseExpr(precedence=
+        if OPERATOR_PROPERTIES[result.bopOperator].bop.isRightAssociative:
+          OPERATOR_PROPERTIES[result.bopOperator].bop.precedence + 0
+        else:
+          OPERATOR_PROPERTIES[result.bopOperator].bop.precedence + 1
+      )
 
 proc parseStmt(this: Parser): Node =
   if this.eos():
@@ -427,20 +582,43 @@ proc parseStmt(this: Parser): Node =
     return nil
 
   case this.get().kind:
+  of TK_P_LBRACE:
+    result = newBlockNode(this.last.pos)
+
+    this.xpc({TK_P_LBRACE}, "Expected an opening bracket")
+
+    while not this.eos() and not this.mch({TK_P_RBRACE}):
+      result.blockBody.add(this.parseStmt())
+
+    this.xpc({TK_P_RBRACE}, "Expected a closing bracket")
+  of TK_K_IF:
+    result = newIfNode(this.last.pos)
+
+    this.xpc({TK_K_IF}, "Expected keyword 'if'")
+    
+    result.ifCondition = this.parseExpr()
+    result.ifBody = this.parseStmt()
+
+    if this.mch({TK_K_ELSE}):
+      this.xpc({TK_K_ELSE}, "Expected keyword 'else'")
+
+      result.elseBody = this.parseStmt()
+    else:
+      result.elseBody = newBlockNode()
   of INSTRUCTIONS:
     result = newInstructionNode(this.last.pos)
 
     this.xpc(INSTRUCTIONS, "Expected an instruction name")
 
-    result.instructionIdentifier = (this.get(-1).lexeme, this.get(-1).kind)
+    result.instructionIdentifier = this.get(-1).kind
 
-    let arity = INSTRUCTION_ARITIES[result.instructionIdentifier.kind]
+    let arity = INSTRUCTION_ARITIES[result.instructionIdentifier]
 
     for i in 0..<arity:
       result.instructionArguments.add(this.parseExpr())
 
       if i < arity - 1:
-        this.xpc({TK_COMMA}, "Expected a comma between arguments")
+        this.xpc({TK_P_COMMA}, "Expected a comma between arguments")
   else:
     this.err()
     this.pnk(INSTRUCTIONS)
@@ -448,7 +626,76 @@ proc parseStmt(this: Parser): Node =
 
 proc parse(this: Parser): void =
   while not this.eos():
-    this.output.programBody.add(this.parseStmt())
+    this.output.blockBody.add(this.parseStmt())
+
+type Compiler = ref object
+  address: int
+
+  input: Node
+  output: Node
+  errors: int
+
+proc newCompiler(
+  input: Node
+): Compiler = Compiler(address: 0, input: input, output: newBlockNode(), errors: 0)
+
+template nxt(this: Compiler): void = (this.address.inc())
+template err(this: Compiler, pos: tuple[line: int, column: int], msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Compiler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
+
+const OS2IS = toTable({
+  TK_O_ADD:               TK_I_ADD,
+  TK_O_SUB:               TK_I_SUB,
+  TK_O_MUL:               TK_I_MUL,
+  TK_O_DIV:               TK_I_DIV,
+  TK_O_MOD:               TK_I_MOD,
+  TK_O_EQUAL:             TK_I_EQUAL,
+  TK_O_NOT_EQUAL:         TK_I_NOT_EQUAL,
+  TK_O_MORE:              TK_I_MORE,
+  TK_O_MORE_THAN_EQUAL:   TK_I_MORE_THAN_EQUAL,
+  TK_O_LESS:              TK_I_LESS,
+  TK_O_LESS_THAN_EQUAL:   TK_I_LESS_THAN_EQUAL,
+  TK_O_SHL:               TK_I_SHL,
+  TK_O_SHR:               TK_I_SHR,
+  TK_O_NOT:               TK_I_NOT,
+  TK_O_AND:               TK_I_AND,
+  TK_O_XOR:               TK_I_XOR,
+  TK_O_OR:                TK_I_OR,
+})
+
+proc compile(this: Compiler, node: Node): Node =
+  result = node
+
+  case node.kind:
+  of NK_BLOCK:
+    result = newBlockNode()
+
+    for child in node.blockBody:
+      result.blockBody.add(this.compile(child))
+  of NK_IF:
+    result = newBlockNode()
+    
+    let condition = this.compile(node.ifCondition)
+    
+    let jump = newInstructionNode(node.ifCondition.pos, TK_I_JUMP)
+    jump.instructionArguments.add(condition)
+    this.nxt()
+    
+    let main = this.compile(node.ifBody)
+
+    jump.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address + 1))
+
+    let other = this.compile(node.elseBody)
+
+    result.blockBody.add(jump)
+    result.blockBody.add(main)
+    result.blockBody.add(other)
+  of NK_INSTRUCTION:
+    this.nxt()
+  else: discard
+
+proc compile(this: Compiler): void =
+  for child in this.input.blockBody:
+    this.output.blockBody.add(this.compile(child))
 
 type Assembler = ref object
   input: Node
@@ -462,37 +709,47 @@ proc newAssembler(
 template err(this: Assembler, pos: tuple[line: int, column: int], msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Assembler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
 
 const OPCODES = toTable({
-  TK_MOVE:        byte(0x00),
-  TK_READ:        byte(0x01),
-  TK_WRITE:       byte(0x02),
-  TK_LOAD:        byte(0x03),
-  TK_STORE:       byte(0x04),
-
-  TK_ADD:         byte(0x10),
-  TK_SUB:         byte(0x11),
-  TK_MUL:         byte(0x12),
-  TK_DIV:         byte(0x13),
-  TK_MOD:         byte(0x14),
-  
-  TK_SHL:         byte(0x20),
-  TK_SHR:         byte(0x21),
-  TK_NOT:         byte(0x22),
-  TK_AND:         byte(0x23),
-  TK_XOR:         byte(0x24),
-  TK_OR:          byte(0x25),
-
-  TK_GOTO:        byte(0x30),
-  TK_JUMP:        byte(0x31),
+  TK_I_MOVE:            byte(0x00),
+  TK_I_READ:            byte(0x01),
+  TK_I_WRITE:           byte(0x02),
+  TK_I_LOAD:            byte(0x03),
+  TK_I_STORE:           byte(0x04),
+  TK_I_ADD:             byte(0x10),
+  TK_I_SUB:             byte(0x11),
+  TK_I_MUL:             byte(0x12),
+  TK_I_DIV:             byte(0x13),
+  TK_I_MOD:             byte(0x14),
+  TK_I_EQUAL:           byte(0x40),
+  TK_I_NOT_EQUAL:       byte(0x41),
+  TK_I_MORE:            byte(0x42),
+  TK_I_MORE_THAN_EQUAL: byte(0x43),
+  TK_I_LESS:            byte(0x44),
+  TK_I_LESS_THAN_EQUAL: byte(0x45),
+  TK_I_SHL:             byte(0x20),
+  TK_I_SHR:             byte(0x21),
+  TK_I_NOT:             byte(0x22),
+  TK_I_AND:             byte(0x23),
+  TK_I_XOR:             byte(0x24),
+  TK_I_OR:              byte(0x25),
+  TK_I_GOTO:            byte(0x30),
+  TK_I_JUMP:            byte(0x31),
+  TK_I_HALT:            byte(0xFE),
+  TK_I_NOOP:            byte(0xFF),
 })
 
 const INSTRUCTION_WIDTH = 4
+const BOOLEAN_FALSE = byte(0)
+const BOOLEAN_TRUE = byte(1)
 
 proc assemble(this: Assembler, node: Node): seq[byte] =
   result = newSeq[byte]()
 
   case node.kind:
+  of NK_BLOCK:
+    for child in node.blockBody:
+      result.add(this.assemble(child))
   of NK_INSTRUCTION:
-    result.add(OPCODES[node.instructionIdentifier.kind])
+    result.add(OPCODES[node.instructionIdentifier])
     
     for arg in node.instructionArguments:
       result.add(this.assemble(arg))
@@ -501,17 +758,15 @@ proc assemble(this: Assembler, node: Node): seq[byte] =
       result.add(0x00)
   of NK_CONSTANT:
     case node.constantKind:
-    of TK_INTEGER:    result.add(byte(node.integerValue))
-    of TK_CHARACTER:  result.add(byte(node.characterValue))
-    of TK_BOOLEAN:    result.add(if node.booleanValue: byte(1) else: byte(0))
-    else: discard
+    of TK_C_INTEGER:    result.add(byte(node.integerValue))
+    of TK_C_CHARACTER:  result.add(byte(node.characterValue))
+    of TK_C_BOOLEAN:    result.add(if node.booleanValue: BOOLEAN_TRUE else: BOOLEAN_FALSE)
+    else:               result.add(0)
   of NK_REGISTER:
     result.add(byte(node.registerAddress))
   else: this.err(node.pos)
 
-proc assemble(this: Assembler): void =
-  for child in this.input.programBody:
-    this.output.add(this.assemble(child))
+proc assemble(this: Assembler): void = this.output = this.assemble(this.input)
 
 type VirtualMachine = ref object
   memory: seq[byte]
@@ -531,44 +786,49 @@ template rset(this: VirtualMachine, reg: SomeInteger, val: SomeInteger): void = 
 template mset(this: VirtualMachine, mem: SomeInteger, val: SomeInteger): void = this.memory[mem] = byte(val)
 template sset(this: VirtualMachine, sid: SomeInteger, val: SomeInteger): void = this.sides[sid] = byte(val)
 
-template rget(this: VirtualMachine, reg: SomeInteger): byte = this.registers[reg]
-template mget(this: VirtualMachine, mem: SomeInteger): byte = this.memory[mem]
-template sget(this: VirtualMachine, sid: SomeInteger): byte = this.sides[sid]
-template iget(this: VirtualMachine, ind: SomeInteger): byte = this.input[ind]
+template rget(this: VirtualMachine, reg: SomeInteger): SomeInteger = this.registers[reg]
+template mget(this: VirtualMachine, mem: SomeInteger): SomeInteger = this.memory[mem]
+template sget(this: VirtualMachine, sid: SomeInteger): SomeInteger = this.sides[sid]
+template iget(this: VirtualMachine, ind: SomeInteger): SomeInteger = this.input[ind]
 
 template eos(this: VirtualMachine): bool = int(this.rget(RIP)) > high this.input
 
-template opcode(this: VirtualMachine): byte = this.iget(this.rget(RIP) - 4)
-template opand1u(this: VirtualMachine): byte = this.iget(this.rget(RIP) - 3)
-template opand2u(this: VirtualMachine): byte = this.iget(this.rget(RIP) - 2)
-template opand3u(this: VirtualMachine): byte = this.iget(this.rget(RIP) - 1)
-template opand1i(this: VirtualMachine): int8 = int8(this.iget(this.rget(RIP) - 3))
-template opand2i(this: VirtualMachine): int8 = int8(this.iget(this.rget(RIP) - 2))
-template opand3i(this: VirtualMachine): int8 = int8(this.iget(this.rget(RIP) - 1))
+template opcode(this: VirtualMachine): SomeInteger = this.iget(this.rget(RIP) - 4)
+template opand1(this: VirtualMachine): SomeInteger = this.iget(this.rget(RIP) - 3)
+template opand2(this: VirtualMachine): SomeInteger = this.iget(this.rget(RIP) - 2)
+template opand3(this: VirtualMachine): SomeInteger = this.iget(this.rget(RIP) - 1)
 
 template err(this: VirtualMachine, msg: string): void = (stderr.styledWrite(fgRed, "[Interpreter]: ", msg, ", received", $this.opcode(), " at ", $this.rget(RIP), "\n"); this.errors.inc())
 template say(this: VirtualMachine, msg: varargs[string]): void = (stdout.styledWrite(fgBlue, "[Debugger]: ", msg.join(), "\n"))
 
 template execute(this: VirtualMachine): void =
   case this.opcode():
-  of OPCODES[TK_MOVE]:  this.rset(this.opand1u(), this.opand2u())
-  of OPCODES[TK_READ]:  this.rset(this.opand1u(), this.sget(this.opand2u()))
-  of OPCODES[TK_WRITE]: this.sset(this.opand1u(), this.rget(this.opand2u()))
-  of OPCODES[TK_LOAD]:  this.rset(this.opand1u(), this.mget(this.opand2u()))
-  of OPCODES[TK_STORE]: this.mset(this.opand1u(), this.rget(this.opand2u()))
-  of OPCODES[TK_ADD]:   this.rset(this.opand1u(), this.rget(this.opand2i())  +  this.rget(this.opand3i())) 
-  of OPCODES[TK_SUB]:   this.rset(this.opand1u(), this.rget(this.opand2i())  -  this.rget(this.opand3i()))   
-  of OPCODES[TK_MUL]:   this.rset(this.opand1u(), this.rget(this.opand2i())  *  this.rget(this.opand3i()))   
-  of OPCODES[TK_DIV]:   this.rset(this.opand1u(), this.rget(this.opand2i()) div this.rget(this.opand3i()))   
-  of OPCODES[TK_MOD]:   this.rset(this.opand1u(), this.rget(this.opand2i()) mod this.rget(this.opand3i()))   
-  of OPCODES[TK_SHL]:   this.rset(this.opand1u(), this.rget(this.opand2i()) shl this.rget(this.opand3i()))
-  of OPCODES[TK_SHR]:   this.rset(this.opand1u(), this.rget(this.opand2i()) shr this.rget(this.opand3i()))
-  of OPCODES[TK_NOT]:   this.rset(this.opand1u(),                           not this.rget(this.opand2i()))
-  of OPCODES[TK_AND]:   this.rset(this.opand1u(), this.rget(this.opand1i()) and this.rget(this.opand3i()))
-  of OPCODES[TK_XOR]:   this.rset(this.opand1u(), this.rget(this.opand1i()) xor this.rget(this.opand3i()))
-  of OPCODES[TK_OR]:    this.rset(this.opand1u(), this.rget(this.opand1i())  or this.rget(this.opand3i()))
-  of OPCODES[TK_GOTO]:  this.rset(RIP, this.opand1u() * INSTRUCTION_WIDTH)
-  of OPCODES[TK_JUMP]:  (if this.rget(this.opand1u()) == 1: this.rset(RIP, this.opand2u() * INSTRUCTION_WIDTH))
+  of OPCODES[TK_I_MOVE]:            this.rset(this.opand1(), this.opand2())
+  of OPCODES[TK_I_READ]:            this.rset(this.opand1(), this.sget(this.opand2()))
+  of OPCODES[TK_I_WRITE]:           this.sset(this.opand1(), this.rget(this.opand2()))
+  of OPCODES[TK_I_LOAD]:            this.rset(this.opand1(), this.mget(this.opand2()))
+  of OPCODES[TK_I_STORE]:           this.mset(this.opand1(), this.rget(this.opand2()))
+  of OPCODES[TK_I_ADD]:             this.rset(this.opand1(), this.rget(this.opand2())  +  this.rget(this.opand3())) 
+  of OPCODES[TK_I_SUB]:             this.rset(this.opand1(), this.rget(this.opand2())  -  this.rget(this.opand3()))   
+  of OPCODES[TK_I_MUL]:             this.rset(this.opand1(), this.rget(this.opand2())  *  this.rget(this.opand3()))   
+  of OPCODES[TK_I_DIV]:             this.rset(this.opand1(), this.rget(this.opand2()) div this.rget(this.opand3()))   
+  of OPCODES[TK_I_MOD]:             this.rset(this.opand1(), this.rget(this.opand2()) mod this.rget(this.opand3()))   
+  of OPCODES[TK_I_EQUAL]:           this.rset(this.opand1(), if this.rget(this.opand2()) == this.rget(this.opand3()): BOOLEAN_TRUE else: BOOLEAN_FALSE)
+  of OPCODES[TK_I_NOT_EQUAL]:       this.rset(this.opand1(), if this.rget(this.opand2()) != this.rget(this.opand3()): BOOLEAN_TRUE else: BOOLEAN_FALSE)
+  of OPCODES[TK_I_MORE]:            this.rset(this.opand1(), if this.rget(this.opand2()) >  this.rget(this.opand3()): BOOLEAN_TRUE else: BOOLEAN_FALSE)
+  of OPCODES[TK_I_MORE_THAN_EQUAL]: this.rset(this.opand1(), if this.rget(this.opand2()) >= this.rget(this.opand3()): BOOLEAN_TRUE else: BOOLEAN_FALSE)
+  of OPCODES[TK_I_LESS]:            this.rset(this.opand1(), if this.rget(this.opand2()) <  this.rget(this.opand3()): BOOLEAN_TRUE else: BOOLEAN_FALSE)
+  of OPCODES[TK_I_LESS_THAN_EQUAL]: this.rset(this.opand1(), if this.rget(this.opand2()) <= this.rget(this.opand3()): BOOLEAN_TRUE else: BOOLEAN_FALSE)
+  of OPCODES[TK_I_SHL]:             this.rset(this.opand1(), this.rget(this.opand2()) shl this.rget(this.opand3()))
+  of OPCODES[TK_I_SHR]:             this.rset(this.opand1(), this.rget(this.opand2()) shr this.rget(this.opand3()))
+  of OPCODES[TK_I_NOT]:             this.rset(this.opand1(),                          not this.rget(this.opand2()))
+  of OPCODES[TK_I_AND]:             this.rset(this.opand1(), this.rget(this.opand1()) and this.rget(this.opand3()))
+  of OPCODES[TK_I_XOR]:             this.rset(this.opand1(), this.rget(this.opand1()) xor this.rget(this.opand3()))
+  of OPCODES[TK_I_OR]:              this.rset(this.opand1(), this.rget(this.opand1()) or  this.rget(this.opand3()))
+  of OPCODES[TK_I_GOTO]:            this.rset(RIP, this.opand1() * INSTRUCTION_WIDTH)
+  of OPCODES[TK_I_JUMP]:            this.rset(RIP, if this.rget(this.opand1()) == BOOLEAN_TRUE: this.opand2() * INSTRUCTION_WIDTH else: this.rget(RIP))
+  of OPCODES[TK_I_HALT]:            this.rset(RIP, 0xFF)
+  of OPCODES[TK_I_NOOP]:            discard
   else: this.err("No such opcode")
 
 proc interpret(this: VirtualMachine): void =
@@ -577,26 +837,32 @@ proc interpret(this: VirtualMachine): void =
     this.execute()
 
 const OPNAMES = toTable({
-  OPCODES[TK_MOVE]:     "MOVE",
-  OPCODES[TK_READ]:     "READ",
-  OPCODES[TK_WRITE]:    "WRITE",
-  OPCODES[TK_LOAD]:     "LOAD",
-  OPCODES[TK_STORE]:    "STORE",
-  OPCODES[TK_ADD]:      "ADD",
-  OPCODES[TK_SUB]:      "SUB",
-  OPCODES[TK_MUL]:      "MUL",
-  OPCODES[TK_DIV]:      "DIV",
-  OPCODES[TK_MOD]:      "MOD",
-  OPCODES[TK_SHL]:      "SHL",
-  OPCODES[TK_SHR]:      "SHR",
-  OPCODES[TK_NOT]:      "NOT",
-  OPCODES[TK_AND]:      "AND",
-  OPCODES[TK_XOR]:      "XOR",
-  OPCODES[TK_OR]:       "OR",
-  OPCODES[TK_GOTO]:     "GOTO",
-  OPCODES[TK_JUMP]:     "JUMP",
-
-  byte(0xFF):           "NOOP",
+  OPCODES[TK_I_MOVE]:             "MOVE",
+  OPCODES[TK_I_READ]:             "READ",
+  OPCODES[TK_I_WRITE]:            "WRITE",
+  OPCODES[TK_I_LOAD]:             "LOAD",
+  OPCODES[TK_I_STORE]:            "STORE",
+  OPCODES[TK_I_ADD]:              "ADD",
+  OPCODES[TK_I_SUB]:              "SUB",
+  OPCODES[TK_I_MUL]:              "MUL",
+  OPCODES[TK_I_DIV]:              "DIV",
+  OPCODES[TK_I_MOD]:              "MOD",
+  OPCODES[TK_I_EQUAL]:            "EQUAL",
+  OPCODES[TK_I_NOT_EQUAL]:        "NOT_EQUAL",
+  OPCODES[TK_I_MORE]:             "MORE",
+  OPCODES[TK_I_MORE_THAN_EQUAL]:  "MORE_THAN_EQUAL",
+  OPCODES[TK_I_LESS]:             "LESS",
+  OPCODES[TK_I_LESS_THAN_EQUAL]:  "LESS_THAN_EQUAL",
+  OPCODES[TK_I_SHL]:              "SHL",
+  OPCODES[TK_I_SHR]:              "SHR",
+  OPCODES[TK_I_NOT]:              "NOT",
+  OPCODES[TK_I_AND]:              "AND",
+  OPCODES[TK_I_XOR]:              "XOR",
+  OPCODES[TK_I_OR]:               "OR",
+  OPCODES[TK_I_GOTO]:             "GOTO",
+  OPCODES[TK_I_JUMP]:             "JUMP",
+  OPCODES[TK_I_HALT]:             "HALT",
+  OPCODES[TK_I_NOOP]:             "NOOP",
 })
 
 proc debug(this: VirtualMachine): void =
@@ -617,13 +883,15 @@ proc debug(this: VirtualMachine): void =
     of "d", "disassemble":
       if not this.eos():
         this.rget(RIP).inc(INSTRUCTION_WIDTH)
-        this.say("Instruction at ", $(this.rget(RIP) div INSTRUCTION_WIDTH).toHex(), ": ", OPNAMES[this.opcode()].alignLeft(8), " ", $this.opand1u().toHex(), " ", $this.opand2u().toHex(), " ", $this.opand3u().toHex())
+        this.say("Instruction at ", $(this.rget(RIP) div INSTRUCTION_WIDTH).toHex(), ": ", OPNAMES[this.opcode()].alignLeft(12), " ", $this.opand1().toHex(), " ", $this.opand2().toHex(), " ", $this.opand3().toHex())
       this.rset(RIP, 0)
     of "D", "Disassemble":
+      let ip = this.rget(RIP)
+      this.rset(RIP, 0)
       for i in 0..(high this.input) div INSTRUCTION_WIDTH:
         this.rget(RIP).inc(INSTRUCTION_WIDTH)
-        this.say($(this.rget(RIP) div INSTRUCTION_WIDTH).toHex(), " = ", OPNAMES[this.opcode()].alignLeft(8), " ", $this.opand1u().toHex(), " ", $this.opand2u().toHex(), " ", $this.opand3u().toHex())
-      this.rset(RIP, 0)
+        this.say($(this.rget(RIP) div INSTRUCTION_WIDTH).toHex(), " = ", OPNAMES[this.opcode()].alignLeft(12), " ", $this.opand1().toHex(), " ", $this.opand2().toHex(), " ", $this.opand3().toHex())
+      this.rset(RIP, ip)
     of "g", "get":
       if input.len() < 2:
         this.say("Expected form (g)et [(r)egister | (m)emory | (s)ide]")
@@ -743,9 +1011,13 @@ proc parseLong(this: Options, item: string): void =
   else:
     this.add(item, "true")
 
-
 proc parseShort(this: Options, item: string): void =
-  if item.len() == 1:
+  if '=' in item:
+    let pair = item.split("=")
+
+    for name in pair[0]:
+      this.add($name, pair[1])
+  elif item.len() == 1:
     this.add(item, "true")
   else:
     for i in 0..high item:
@@ -789,13 +1061,26 @@ proc lex(input: (string, bool, string)): (seq[Token], bool, string) =
   return (lexer.output, lexer.errors > 0, "Failed to tokenize")
 
 proc parse(input: (seq[Token], bool, string)): (Node, bool, string) =
-  if input[1]: return (newProgramNode(), input[1], input[2])
+  if input[1]: return (newBlockNode(), input[1], input[2])
   
   let parser = newParser(input[0])
 
   parser.parse()
 
+  echo %parser.output
+
   return (parser.output, parser.errors > 0, "Failed to parse")
+
+proc compile(input: (Node, bool, string)): (Node, bool, string) =
+  if input[1]: return (newBlockNode(), input[1], input[2])
+
+  let compiler = newCompiler(input[0])
+
+  compiler.compile()
+
+  echo %compiler.output
+
+  return (compiler.output, compiler.errors > 0, "Failed to compile")
 
 proc assemble(input: (Node, bool, string)): (seq[byte], bool, string) =
   if input[1]: return (newSeq[byte](), input[1], input[2])
@@ -874,6 +1159,7 @@ when isMainModule:
            .text()
            .lex()
            .parse()
+           .compile()
            .assemble()
            .interpret()
            .display()
@@ -884,6 +1170,7 @@ when isMainModule:
            .text()
            .lex()
            .parse()
+           .compile()
            .assemble()
            .write(options.get("out"))
            .display()
@@ -902,6 +1189,7 @@ when isMainModule:
              .text()
              .lex()
              .parse()
+             .compile()
              .assemble()
              .debug()
              .display()
