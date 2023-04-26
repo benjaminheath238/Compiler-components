@@ -682,12 +682,18 @@ proc compile(this: Compiler, node: Node): Node =
     
     let main = this.compile(node.ifBody)
 
+    let goto = newInstructionNode(node.ifCondition.pos, TK_I_GOTO)
+    this.nxt()
+
     jump.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address + 1))
 
     let other = this.compile(node.elseBody)
-
+    
+    goto.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address + 1))
+    
     result.blockBody.add(jump)
     result.blockBody.add(main)
+    result.blockBody.add(goto)
     result.blockBody.add(other)
   of NK_INSTRUCTION:
     this.nxt()
