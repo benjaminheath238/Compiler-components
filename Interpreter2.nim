@@ -76,6 +76,7 @@ type TokenKind = enum
 
   # Keywords
   TK_K_MACRO
+  TK_K_LABEL
   TK_K_IF
   TK_K_ELSE
   
@@ -202,6 +203,7 @@ const RESERVED_LEXEMES = toTable({
   "TRUE":             TK_C_BOOLEAN,
   "FALSE":            TK_C_BOOLEAN,
   "MACRO":            TK_K_MACRO,
+  "LABEL":            TK_K_LABEL,
   "IF":               TK_K_IF,
   "ELSE":             TK_K_ELSE,
   "WHILE":            TK_K_WHILE,
@@ -336,6 +338,7 @@ type NodeKind = enum
   NK_BLOCK
 
   NK_MACRO
+  NK_LABEL
   NK_IF
   NK_WHILE
 
@@ -348,6 +351,7 @@ type NodeKind = enum
   NK_REGISTER
 
   NK_MACRO_CALL
+  NK_LABEL_REF
 
 type Node = ref object
   pos: tuple[line: int, column: int]
@@ -358,6 +362,8 @@ type Node = ref object
   of NK_MACRO:
     macroName: string
     macroBody: Node
+  of NK_LABEL:
+    labelName: string
   of NK_IF:
     ifCondition: Node
     thenBody: Node
@@ -388,9 +394,11 @@ type Node = ref object
     registerAddress: int
   of NK_MACRO_CALL:
     macroCallName: string
+  of NK_LABEL_REF:
+    labelRefName: string
 
 type State = ref object
-  env: TableRef[string, byte]
+  env: TableRef[string, int]
   macros: seq[Node]
 
 type Parser = ref object
@@ -416,6 +424,12 @@ proc newMacroNode(
   name: string = "",
   body: Node = nil,
 ): Node = Node(pos: pos, kind: NK_MACRO, macroName: name, macroBody: body)
+
+proc newLabelNode(
+  pos: tuple[line: int, column: int],
+  
+  name: string = "",
+): Node = Node(pos: pos, kind: NK_LABEL, labelName: name)
 
 proc newIfNode(
   pos: tuple[line: int, column: int],
@@ -484,7 +498,13 @@ proc newMacroCallNode(
   name: string = ""
 ): Node = Node(pos: pos, kind: NK_MACRO_CALL, macroCallName: name)
 
-proc newState(): State = State(env: newTable[string, byte](), macros: newSeq[Node]())
+proc newLabelRefNode(
+  pos: tuple[line: int, column: int],
+  
+  name: string = ""
+): Node = Node(pos: pos, kind: NK_LABEL_REF, labelRefName: name)
+
+proc newState(): State = State(env: newTable[string, int](), macros: newSeq[Node]())
 
 proc newParser(
   input: seq[Token]
@@ -559,7 +579,7 @@ proc parseExpr(this: Parser, precedence: int = 0, primary: bool = false): Node =
 
   if primary:
     case this.get().kind:
-    of TK_C_INTEGER:
+    of {TK_C_INTEGER}:
       result = newIntegerConstantNode(this.last.pos)
 
       this.xpc({TK_C_INTEGER}, "Expected an integer literal")
@@ -606,7 +626,12 @@ proc parseExpr(this: Parser, precedence: int = 0, primary: bool = false): Node =
         result.registerAddress = 0
 
       this.xpc({TK_P_RBRACK}, "Expected a closing bracket after register")
+    of TK_C_IDENTIFIER:
+      result = newLabelRefNode(this.last.pos)
 
+      this.xpc({TK_C_IDENTIFIER}, "Expected an identifier")
+      
+      result.labelRefName = this.get(-1).lexeme
     else:
       this.err()
       this.pnk({TK_C_INTEGER, TK_C_CHARACTER, TK_C_BOOLEAN, TK_P_LBRACK})
@@ -652,9 +677,18 @@ proc parseStmt(this: Parser): Node =
     result.macroName = this.get(-1).lexeme
     
     this.state.macros.add(result)
-    this.state.env[result.macroName] = byte(high this.state.macros)
+    this.state.env[result.macroName] = high this.state.macros
 
     result.macroBody = this.parseStmt()
+  of TK_K_LABEL:
+    result = newLabelNode(this.last.pos)
+
+    this.xpc({TK_K_LABEL}, "Expected keyword 'label'")
+    this.xpc({TK_C_IDENTIFIER}, "Expected keyword 'identifier'")
+
+    result.labelName = this.get(-1).lexeme
+    
+    this.state.env[result.labelName] = 0
   of TK_K_IF:
     result = newIfNode(this.last.pos)
 
@@ -685,10 +719,10 @@ proc parseStmt(this: Parser): Node =
 
     let arity = INSTRUCTION_ARITIES[result.instructionIdentifier]
 
-    for i in 0..<arity:
+    for i in 1..arity:
       result.instructionArguments.add(this.parseExpr())
 
-      if i < arity - 1:
+      if i < arity:
         this.xpc({TK_P_COMMA}, "Expected a comma between arguments")
   of TK_C_IDENTIFIER:
     result = newMacroCallNode(this.last.pos)
@@ -724,27 +758,7 @@ proc newCompiler(
 ): Compiler = Compiler(address: 0, state: state, input: input, output: newBlockNode(), errors: 0)
 
 template nxt(this: Compiler): void = (this.address.inc())
-template err(this: Compiler, pos: tuple[line: int, column: int], msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Compiler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
-
-const OS2IS = toTable({
-  TK_O_ADD:               TK_I_ADD,
-  TK_O_SUB:               TK_I_SUB,
-  TK_O_MUL:               TK_I_MUL,
-  TK_O_DIV:               TK_I_DIV,
-  TK_O_MOD:               TK_I_MOD,
-  TK_O_EQUAL:             TK_I_EQUAL,
-  TK_O_NOT_EQUAL:         TK_I_NOT_EQUAL,
-  TK_O_MORE:              TK_I_MORE,
-  TK_O_MORE_THAN_EQUAL:   TK_I_MORE_THAN_EQUAL,
-  TK_O_LESS:              TK_I_LESS,
-  TK_O_LESS_THAN_EQUAL:   TK_I_LESS_THAN_EQUAL,
-  TK_O_SHL:               TK_I_SHL,
-  TK_O_SHR:               TK_I_SHR,
-  TK_O_NOT:               TK_I_NOT,
-  TK_O_AND:               TK_I_AND,
-  TK_O_XOR:               TK_I_XOR,
-  TK_O_OR:                TK_I_OR,
-})
+template err(this: Compiler, pos: tuple[line: int, column: int], msg: string = "Unexpected node"): void = (stderr.styledWrite(fgRed, "[Compiler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
 
 proc compile(this: Compiler, node: Node): Node =
   result = node
@@ -754,9 +768,16 @@ proc compile(this: Compiler, node: Node): Node =
     result = newBlockNode(node.pos)
 
     for child in node.blockBody:
-      result.blockBody.add(this.compile(child))
+      let compiled = this.compile(child)
+      
+      if compiled != nil:
+        result.blockBody.add(compiled)
+  of NK_LABEL:
+    result = nil
+
+    this.state.env[node.labelName] = this.address
   of NK_MACRO:
-    result = newInstructionNode(node.pos)
+    result = nil
   of NK_IF:
     result = newBlockNode(node.pos)    
 
@@ -771,11 +792,11 @@ proc compile(this: Compiler, node: Node): Node =
     let ifGoto = newInstructionNode(node.ifCondition.pos, TK_I_GOTO)
     this.nxt()
 
-    ifJump.instructionArguments.add(newIntegerConstantNode(ifCondition.pos, this.address + 1))
+    ifJump.instructionArguments.add(newIntegerConstantNode(ifCondition.pos, this.address))
 
     let elseBody = this.compile(node.elseBody)
     
-    ifGoto.instructionArguments.add(newIntegerConstantNode(ifCondition.pos, this.address + 1))
+    ifGoto.instructionArguments.add(newIntegerConstantNode(ifCondition.pos, this.address))
     
     result.blockBody.add(ifJump)
     result.blockBody.add(thenBody)
@@ -797,15 +818,25 @@ proc compile(this: Compiler, node: Node): Node =
     
     let main = this.compile(node.whileBody)
 
-    jump.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address + 1))
+    jump.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address))
     
     result.blockBody.add(jump)
     result.blockBody.add(main)
     result.blockBody.add(goto)
   of NK_INSTRUCTION:
-    this.nxt()
+    if node.instructionIdentifier == TK_I_NOOP:
+      result = nil
+    else:
+      this.nxt()
+
+    for i, arg in node.instructionArguments:
+      node.instructionArguments[i] = this.compile(arg)
   of NK_MACRO_CALL:
-    result = this.state.macros[this.state.env[node.macroCallName]].macroBody
+    result = this.compile(this.state.macros[this.state.env[node.macroCallName]].macroBody)
+  of NK_LABEL_REF:
+    result = newIntegerConstantNode(node.pos)
+
+    result.integerValue = this.state.env[node.labelRefName]
   else: discard
 
 proc compile(this: Compiler): void = this.output = this.compile(this.input)
@@ -988,59 +1019,91 @@ proc debug(this: VirtualMachine): void =
     case input[0]:
     of "r", "run":
       if not this.eos():
-        this.rget(RIP).inc(3)
+        this.rget(RIP).inc(INSTRUCTION_WIDTH)
         this.execute()
       else:
         this.say("End of stream, use (s)tart to return to start")
     of "R", "Run":
       this.interpret()
-    of "s", "start":
+    of "t", "start":
       this.rset(RIP, 0)
     of "d", "disassemble":
       if not this.eos():
         this.rget(RIP).inc(INSTRUCTION_WIDTH)
-        this.say("Instruction at ", $(this.rget(RIP) div INSTRUCTION_WIDTH).toHex(), ": ", OPNAMES[this.opcode()].alignLeft(12), " ", $this.opand1().toHex(), " ", $this.opand2().toHex(), " ", $this.opand3().toHex())
-      this.rset(RIP, 0)
+        this.say("Instruction at ", $((this.rget(RIP) - 1) div INSTRUCTION_WIDTH).toHex(), ": ", OPNAMES[this.opcode()].alignLeft(12), " ", $this.opand1().toHex(), " ", $this.opand2().toHex(), " ", $this.opand3().toHex())
+        this.rget(RIP).dec(INSTRUCTION_WIDTH)
     of "D", "Disassemble":
       let ip = this.rget(RIP)
       this.rset(RIP, 0)
       for i in 0..(high this.input) div INSTRUCTION_WIDTH:
         this.rget(RIP).inc(INSTRUCTION_WIDTH)
-        this.say($(this.rget(RIP) div INSTRUCTION_WIDTH).toHex(), " = ", OPNAMES[this.opcode()].alignLeft(12), " ", $this.opand1().toHex(), " ", $this.opand2().toHex(), " ", $this.opand3().toHex())
+        this.say($((this.rget(RIP) - 1) div INSTRUCTION_WIDTH).toHex(), " = ", OPNAMES[this.opcode()].alignLeft(12), " ", $this.opand1().toHex(), " ", $this.opand2().toHex(), " ", $this.opand3().toHex())
       this.rset(RIP, ip)
     of "g", "get":
-      if input.len() < 2:
-        this.say("Expected form (g)et [(r)egister | (m)emory | (s)ide]")
+      if input.len() < 3 or not input[2].isInteger():
+        this.say("Expected form (g)et [(r)egister | (m)emory | (s)ide] [index:byte]")
         continue
 
       case input[1]:
       of "r", "register":
-        if input.len() == 3 and input[2].isInteger():
-          let b = byte(input[2].asInteger())
+        let i = input[2].asInteger()
 
-          this.say("Value of register ", b.toHex(), " = ", $this.rget(b).toHex())
+        if i in {0x00..0x0E}:
+          this.say("Value of register ", i.toHex(), " = ", $this.rget(byte(i)).toHex())
         else:
-          this.say("Expected form (g)et (r)egister [register:byte]")
+          this.say("Index must be in interval [0x00, 0x0F)")
       of "m", "memory":
-        if input.len() == 3 and input[2].isInteger():
-          let b = byte(input[2].asInteger())
+        let i = input[2].asInteger()
           
-          this.say("Value of memory at ", b.toHex(), " = ", $this.mget(b).toHex())
+        if i in {0x00..0xFE}:
+          this.say("Value of memory at ", i.toHex(), " = ", $this.mget(byte(i)).toHex())
         else:
-          this.say("Expected form (g)et m(emory [address:byte]")
+          this.say("Index must be in interval [0x00, 0xFF)")
       of "s", "side":
-        if input.len() == 3 and input[2].isInteger():
-          let b = byte(input[2].asInteger())
+        let i = input[2].asInteger()
 
-          this.say("Value of side ", b.toHex(), " = ", $this.sget(b).toHex())
+        if i in {0x00..0x05}:
+          this.say("Value of side ", i.toHex(), " = ", $this.sget(byte(i)).toHex())
         else:
-          this.say("Expected form (g)et (s)ide [side:byte]")
+          this.say("Index must be in interval [0x00, 0x06)")
       else:
-        this.say("Expected form (g)et [(r)egister | (m)emory | (s)ide]")
+        this.say("Expected form (g)et [(r)egister | (m)emory | (s)ide] [index:byte]")
+    of "s", "set":
+      if input.len() < 4 or not input[2].isInteger() or not input[3].isInteger():
+        this.say("Expected form (s)et [(r)egister | (m)emory | (s)ide] [index:byte] [value:byte]")
+        continue
+
+      case input[1]:
+      of "r", "register":
+        let i = input[2].asInteger()
+        let v = input[3].asInteger()
+        
+        if i in {0x00..0x0E} and v in {0x00..0xFE}:
+          this.rset(byte(i), byte(v))
+        else:
+          this.say("Index must be in interval [0x00, 0x0F), value must be in interval [0x00, 0xFF)")
+      of "m", "memory":
+        let i = input[2].asInteger()
+        let v = input[3].asInteger()
+        
+        if i in {0x00..0xFE} and v in {0x00..0xFE}:
+          this.mset(byte(i), byte(v))
+        else:
+          this.say("Index must be in interval [0x00, 0xFF), value must be in interval [0x00, 0xFF)")
+      of "s", "side":
+        let i = input[2].asInteger()
+        let v = input[3].asInteger()
+
+        if i in {0x00..0x05} and v in {0x00..0xFE}:
+          this.sset(byte(i), byte(v))
+        else:
+          this.say("Index must be in interval [0x00, 0x06), value must be in interval [0x00, 0xFF)")
+      else:
+        this.say("Expected form (s)et [(r)egister | (m)emory | (s)ide] [index:byte] [value:byte]")
     of "q", "quit":
       break
     else:
-      this.say("Expected form [(r | R)un | (s)tart | (d | D)isassemble | (g)et | (q)uit]")
+      this.say("Expected form [(r | R)un | s(t)art | (d | D)isassemble | (g)et | (s)et | (q)uit]")
 
 type OptionParameter = enum
   OP_INPUT_FILE
@@ -1203,6 +1266,34 @@ proc assemble(input: (Node, bool, string)): (seq[byte], bool, string) =
 
   return (assembler.output, assembler.errors > 0, "Failed to assemble")
 
+proc disassemble(input: (seq[byte], bool, string)): (string, bool, string) =
+  if input[1]: return ("", input[1], input[2])
+ 
+  let bytes = input[0]
+  
+  var output = ""
+  
+  var opname = ""
+  var opcode = TK_I_NOOP
+  var arity = 0
+  
+  for i in countup(0, high input[0], INSTRUCTION_WIDTH):
+    opname = OPNAMES[bytes[i + 0]]
+    opcode = RESERVED_LEXEMES[opname]    
+    arity = INSTRUCTION_ARITIES[opcode]    
+    
+    output &= opname.alignLeft(12)
+
+    for j in 1..arity:
+      output &= " 0x" & $bytes[i + j].toHex()
+
+      if j < arity:
+        output &= ","
+
+    output &= "\n"
+
+  return (output, false, "")
+
 proc readBytes(input: (string, bool, string)): (seq[byte], bool, string) =
   if input[1]: return (newSeq[byte](), input[1], input[2])
   
@@ -1236,7 +1327,7 @@ proc writeBytes(input: (seq[byte], bool, string), output: string): (bool, string
 
 proc writeString(input: (string, bool, string), output: string): (bool, string) =
   if input[1]: return (input[1], input[2])
-  
+
   output.writeFile(input[0])
 
   return (false, "")
@@ -1282,7 +1373,7 @@ when isMainModule:
            .interpret()
            .display()
   elif options.has("c"):
-    if not options.has("target") or options.get("target") == "rasm":
+    if not options.has("target") or options.get("target") == "rsec":
       options.get("in")
             .exists()
             .readString()
@@ -1292,7 +1383,7 @@ when isMainModule:
             .assemble()
             .writeBytes(options.get("out"))
             .display()
-    elif not options.has("target") or options.get("target") == "rsec":
+    elif options.has("target") and options.get("target") == "rasm":
       options.get("in")
             .exists()
             .readString()
@@ -1300,7 +1391,8 @@ when isMainModule:
             .parse()
             .compile()
             .assemble()
-            .writeBytes(options.get("out"))
+            .disassemble()
+            .writeString(options.get("out"))
             .display()
   elif options.has("e"):
     options.get("in")
