@@ -75,8 +75,11 @@ type TokenKind = enum
   TK_C_BOOLEAN
 
   # Keywords
+  TK_K_MACRO
   TK_K_IF
   TK_K_ELSE
+  
+  TK_K_WHILE
 
   # Arithmetic
   TK_O_ADD
@@ -137,7 +140,8 @@ type TokenKind = enum
 
   # Control Flow
   TK_I_GOTO
-  TK_I_JUMP
+  TK_I_JUMP_FALSE
+  TK_I_JUMP_TRUE
 
   # VM Control
   TK_I_HALT
@@ -147,6 +151,8 @@ type TokenKind = enum
   TK_P_LBRACK
   TK_P_RBRACE
   TK_P_LBRACE
+  TK_P_RPAREN
+  TK_P_LPAREN
 
   TK_P_COMMA
 
@@ -195,8 +201,10 @@ template err(this: Lexer, msg: string = "Unexpected character"): void = (stderr.
 const RESERVED_LEXEMES = toTable({
   "TRUE":             TK_C_BOOLEAN,
   "FALSE":            TK_C_BOOLEAN,
+  "MACRO":            TK_K_MACRO,
   "IF":               TK_K_IF,
   "ELSE":             TK_K_ELSE,
+  "WHILE":            TK_K_WHILE,
   "+":                TK_O_ADD,
   "-":                TK_O_SUB,
   "*":                TK_O_MUL,
@@ -237,13 +245,16 @@ const RESERVED_LEXEMES = toTable({
   "XOR":              TK_I_XOR,
   "OR":               TK_I_OR,
   "GOTO":             TK_I_GOTO,
-  "JUMP":             TK_I_JUMP,
+  "JUMP_FALSE":       TK_I_JUMP_FALSE,
+  "JUMP_TRUE":        TK_I_JUMP_TRUE,
   "HALT":             TK_I_HALT,
   "NOOP":             TK_I_NOOP,
   "[":                TK_P_LBRACK,
   "]":                TK_P_RBRACK,
   "{":                TK_P_LBRACE,
   "}":                TK_P_RBRACE,
+  "(":                TK_P_LPAREN,
+  ")":                TK_P_RPAREN,
   ",":                TK_P_COMMA,
 })
 
@@ -324,7 +335,9 @@ proc tokenize(this: Lexer): void =
 type NodeKind = enum
   NK_BLOCK
 
+  NK_MACRO
   NK_IF
+  NK_WHILE
 
   NK_INSTRUCTION
   
@@ -334,16 +347,24 @@ type NodeKind = enum
   NK_CONSTANT
   NK_REGISTER
 
+  NK_MACRO_CALL
+
 type Node = ref object
   pos: tuple[line: int, column: int]
 
   case kind: NodeKind:
   of NK_BLOCK:
     blockBody: seq[Node]
+  of NK_MACRO:
+    macroName: string
+    macroBody: Node
   of NK_IF:
     ifCondition: Node
-    ifBody: Node
+    thenBody: Node
     elseBody: Node
+  of NK_WHILE:
+    whileCondition: Node
+    whileBody: Node
   of NK_INSTRUCTION:
     instructionIdentifier: TokenKind
     instructionArguments: seq[Node]
@@ -365,9 +386,17 @@ type Node = ref object
     else: discard
   of NK_REGISTER:
     registerAddress: int
+  of NK_MACRO_CALL:
+    macroCallName: string
+
+type State = ref object
+  env: TableRef[string, byte]
+  macros: seq[Node]
 
 type Parser = ref object
   index: int
+
+  state: State
 
   last: Token
 
@@ -381,13 +410,27 @@ proc newBlockNode(
   body: seq[Node] = newSeq[Node]()
 ): Node = Node(pos: pos, kind: NK_BLOCK, blockBody: body)
 
+proc newMacroNode(
+  pos: tuple[line: int, column: int],
+  
+  name: string = "",
+  body: Node = nil,
+): Node = Node(pos: pos, kind: NK_MACRO, macroName: name, macroBody: body)
+
 proc newIfNode(
   pos: tuple[line: int, column: int],
   
   condition: Node = nil,
-  body: Node = nil,
+  thenBody: Node = nil,
   elseBody: Node = nil,
-): Node = Node(pos: pos, kind: NK_IF, ifCondition: condition, ifBody: body, elseBody: body)
+): Node = Node(pos: pos, kind: NK_IF, ifCondition: condition, thenBody: thenBody, elseBody: elseBody)
+
+proc newWhileNode(
+  pos: tuple[line: int, column: int],
+  
+  condition: Node = nil,
+  body: Node = nil,
+): Node = Node(pos: pos, kind: NK_WHILE, whileCondition: condition, whileBody: body)
 
 proc newInstructionNode(
   pos: tuple[line: int, column: int],
@@ -435,9 +478,17 @@ proc newRegisterNode(
   address: int = 0
 ): Node = Node(pos: pos, kind: NK_REGISTER, registerAddress: address)
 
+proc newMacroCallNode(
+  pos: tuple[line: int, column: int],
+  
+  name: string = ""
+): Node = Node(pos: pos, kind: NK_MACRO_CALL, macroCallName: name)
+
+proc newState(): State = State(env: newTable[string, byte](), macros: newSeq[Node]())
+
 proc newParser(
   input: seq[Token]
-): Parser = Parser(index: 0, last: input[0], input: input, output: newBlockNode(), errors: 0)
+): Parser = Parser(index: 0, last: input[0], state: newState(), input: input, output: newBlockNode(), errors: 0)
 
 template eos(this: Parser, offset: int = 0): bool = (this.index + offset > high this.input)
 template get(this: Parser, offset: int = 0): Token = (this.input[this.index + offset])
@@ -445,7 +496,7 @@ template nxt(this: Parser): void = (this.index.inc(); (if not this.eos(): this.l
 template err(this: Parser, msg: string = "Unexpected token"): void = (stderr.styledWrite(fgRed, "[Parser]: ", $msg, ", received '", $this.last.lexeme, "' at ", $this.last.pos.line, ":", $this.last.pos.column, "\n"); this.errors.inc())
 template mch(this: Parser, kinds: set[TokenKind]): bool = (this.get().kind in kinds)
 template pnk(this: Parser, kinds: set[TokenKind]): void = (while not this.eos() and not this.mch(kinds): this.nxt())
-template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if this.mch(kinds): (this.nxt()) else: (this.err(msg); this.pnk(kinds)))
+template xpc(this: Parser, kinds: set[TokenKind], msg: string): void = (if not this.eos() and this.mch(kinds): (this.nxt()) else: (this.err(msg); this.pnk(kinds)))
 
 const INSTRUCTION_ARITIES = toTable({
   TK_I_MOVE:            2,
@@ -471,7 +522,8 @@ const INSTRUCTION_ARITIES = toTable({
   TK_I_XOR:             3,
   TK_I_OR:              3,
   TK_I_GOTO:            1,
-  TK_I_JUMP:            2,
+  TK_I_JUMP_FALSE:      2,
+  TK_I_JUMP_TRUE:       2,
   TK_I_HALT:            0,
   TK_I_NOOP:            0,
 })
@@ -591,13 +643,25 @@ proc parseStmt(this: Parser): Node =
       result.blockBody.add(this.parseStmt())
 
     this.xpc({TK_P_RBRACE}, "Expected a closing bracket")
+  of TK_K_MACRO:
+    result = newMacroNode(this.last.pos)
+
+    this.xpc({TK_K_MACRO}, "Expected keyword 'macro'")
+    this.xpc({TK_C_IDENTIFIER}, "Expected keyword 'identifier'")
+
+    result.macroName = this.get(-1).lexeme
+    
+    this.state.macros.add(result)
+    this.state.env[result.macroName] = byte(high this.state.macros)
+
+    result.macroBody = this.parseStmt()
   of TK_K_IF:
     result = newIfNode(this.last.pos)
 
     this.xpc({TK_K_IF}, "Expected keyword 'if'")
     
     result.ifCondition = this.parseExpr()
-    result.ifBody = this.parseStmt()
+    result.thenBody = this.parseStmt()
 
     if this.mch({TK_K_ELSE}):
       this.xpc({TK_K_ELSE}, "Expected keyword 'else'")
@@ -605,6 +669,13 @@ proc parseStmt(this: Parser): Node =
       result.elseBody = this.parseStmt()
     else:
       result.elseBody = newBlockNode()
+  of TK_K_WHILE:
+    result = newWhileNode(this.last.pos)
+
+    this.xpc({TK_K_WHILE}, "Expected keyword 'while'")
+    
+    result.whileCondition = this.parseExpr()
+    result.whileBody = this.parseStmt()
   of INSTRUCTIONS:
     result = newInstructionNode(this.last.pos)
 
@@ -619,6 +690,15 @@ proc parseStmt(this: Parser): Node =
 
       if i < arity - 1:
         this.xpc({TK_P_COMMA}, "Expected a comma between arguments")
+  of TK_C_IDENTIFIER:
+    result = newMacroCallNode(this.last.pos)
+
+    this.xpc({TK_C_IDENTIFIER}, "Expected an identifier")
+    
+    result.macroCallName = this.get(-1).lexeme
+
+    this.xpc({TK_P_LPAREN}, "Expected an opening parenthesis before macro arguments")
+    this.xpc({TK_P_RPAREN}, "Expected a closing parenthesis after macro arguments")
   else:
     this.err()
     this.pnk(INSTRUCTIONS)
@@ -631,13 +711,17 @@ proc parse(this: Parser): void =
 type Compiler = ref object
   address: int
 
+  state: State
+
   input: Node
   output: Node
   errors: int
 
 proc newCompiler(
+  state: State,
+
   input: Node
-): Compiler = Compiler(address: 0, input: input, output: newBlockNode(), errors: 0)
+): Compiler = Compiler(address: 0, state: state, input: input, output: newBlockNode(), errors: 0)
 
 template nxt(this: Compiler): void = (this.address.inc())
 template err(this: Compiler, pos: tuple[line: int, column: int], msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Compiler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
@@ -667,41 +751,64 @@ proc compile(this: Compiler, node: Node): Node =
 
   case node.kind:
   of NK_BLOCK:
-    result = newBlockNode()
+    result = newBlockNode(node.pos)
 
     for child in node.blockBody:
       result.blockBody.add(this.compile(child))
+  of NK_MACRO:
+    result = newInstructionNode(node.pos)
   of NK_IF:
-    result = newBlockNode()
+    result = newBlockNode(node.pos)    
+
+    let ifCondition = this.compile(node.ifCondition)
     
-    let condition = this.compile(node.ifCondition)
+    let ifJump = newInstructionNode(node.ifCondition.pos, TK_I_JUMP_FALSE)
+    ifJump.instructionArguments.add(ifCondition)
+    this.nxt()
     
-    let jump = newInstructionNode(node.ifCondition.pos, TK_I_JUMP)
+    let thenBody = this.compile(node.thenBody)
+
+    let ifGoto = newInstructionNode(node.ifCondition.pos, TK_I_GOTO)
+    this.nxt()
+
+    ifJump.instructionArguments.add(newIntegerConstantNode(ifCondition.pos, this.address + 1))
+
+    let elseBody = this.compile(node.elseBody)
+    
+    ifGoto.instructionArguments.add(newIntegerConstantNode(ifCondition.pos, this.address + 1))
+    
+    result.blockBody.add(ifJump)
+    result.blockBody.add(thenBody)
+    result.blockBody.add(ifGoto)
+    result.blockBody.add(elseBody)
+  of NK_WHILE:
+    result = newBlockNode(node.pos)
+    
+    let condition = this.compile(node.whileCondition)
+    
+    let jump = newInstructionNode(node.whileCondition.pos, TK_I_JUMP_FALSE)
     jump.instructionArguments.add(condition)
     this.nxt()
-    
-    let main = this.compile(node.ifBody)
 
-    let goto = newInstructionNode(node.ifCondition.pos, TK_I_GOTO)
+    let goto = newInstructionNode(node.whileCondition.pos, TK_I_GOTO)
+    goto.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address))
+
     this.nxt()
+    
+    let main = this.compile(node.whileBody)
 
     jump.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address + 1))
-
-    let other = this.compile(node.elseBody)
-    
-    goto.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address + 1))
     
     result.blockBody.add(jump)
     result.blockBody.add(main)
     result.blockBody.add(goto)
-    result.blockBody.add(other)
   of NK_INSTRUCTION:
     this.nxt()
+  of NK_MACRO_CALL:
+    result = this.state.macros[this.state.env[node.macroCallName]].macroBody
   else: discard
 
-proc compile(this: Compiler): void =
-  for child in this.input.blockBody:
-    this.output.blockBody.add(this.compile(child))
+proc compile(this: Compiler): void = this.output = this.compile(this.input)
 
 type Assembler = ref object
   input: Node
@@ -712,7 +819,7 @@ proc newAssembler(
   input: Node
 ): Assembler = Assembler(input: input, output: newSeq[byte](), errors: 0)
 
-template err(this: Assembler, pos: tuple[line: int, column: int], msg: string = "Unexpected Node"): void = (stderr.styledWrite(fgRed, "[Assembler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
+template err(this: Assembler, pos: tuple[line: int, column: int], msg: string = "Unexpected node"): void = (stderr.styledWrite(fgRed, "[Assembler]: ", msg, " at ", $pos.line, ":", $pos.column, "\n"); this.errors.inc())
 
 const OPCODES = toTable({
   TK_I_MOVE:            byte(0x00),
@@ -738,7 +845,8 @@ const OPCODES = toTable({
   TK_I_XOR:             byte(0x24),
   TK_I_OR:              byte(0x25),
   TK_I_GOTO:            byte(0x30),
-  TK_I_JUMP:            byte(0x31),
+  TK_I_JUMP_FALSE:      byte(0x31),
+  TK_I_JUMP_TRUE:       byte(0x32),
   TK_I_HALT:            byte(0xFE),
   TK_I_NOOP:            byte(0xFF),
 })
@@ -767,7 +875,7 @@ proc assemble(this: Assembler, node: Node): seq[byte] =
     of TK_C_INTEGER:    result.add(byte(node.integerValue))
     of TK_C_CHARACTER:  result.add(byte(node.characterValue))
     of TK_C_BOOLEAN:    result.add(if node.booleanValue: BOOLEAN_TRUE else: BOOLEAN_FALSE)
-    else:               result.add(0)
+    else:               discard
   of NK_REGISTER:
     result.add(byte(node.registerAddress))
   else: this.err(node.pos)
@@ -832,7 +940,8 @@ template execute(this: VirtualMachine): void =
   of OPCODES[TK_I_XOR]:             this.rset(this.opand1(), this.rget(this.opand1()) xor this.rget(this.opand3()))
   of OPCODES[TK_I_OR]:              this.rset(this.opand1(), this.rget(this.opand1()) or  this.rget(this.opand3()))
   of OPCODES[TK_I_GOTO]:            this.rset(RIP, this.opand1() * INSTRUCTION_WIDTH)
-  of OPCODES[TK_I_JUMP]:            this.rset(RIP, if this.rget(this.opand1()) == BOOLEAN_TRUE: this.opand2() * INSTRUCTION_WIDTH else: this.rget(RIP))
+  of OPCODES[TK_I_JUMP_FALSE]:      this.rset(RIP, if this.rget(this.opand1()) == BOOLEAN_FALSE: this.opand2() * INSTRUCTION_WIDTH else: this.rget(RIP))
+  of OPCODES[TK_I_JUMP_TRUE]:       this.rset(RIP, if this.rget(this.opand1()) == BOOLEAN_TRUE:  this.opand2() * INSTRUCTION_WIDTH else: this.rget(RIP))
   of OPCODES[TK_I_HALT]:            this.rset(RIP, 0xFF)
   of OPCODES[TK_I_NOOP]:            discard
   else: this.err("No such opcode")
@@ -866,7 +975,8 @@ const OPNAMES = toTable({
   OPCODES[TK_I_XOR]:              "XOR",
   OPCODES[TK_I_OR]:               "OR",
   OPCODES[TK_I_GOTO]:             "GOTO",
-  OPCODES[TK_I_JUMP]:             "JUMP",
+  OPCODES[TK_I_JUMP_FALSE]:       "JUMP_FALSE",
+  OPCODES[TK_I_JUMP_TRUE]:        "JUMP_TRUE",
   OPCODES[TK_I_HALT]:             "HALT",
   OPCODES[TK_I_NOOP]:             "NOOP",
 })
@@ -1066,25 +1176,21 @@ proc lex(input: (string, bool, string)): (seq[Token], bool, string) =
 
   return (lexer.output, lexer.errors > 0, "Failed to tokenize")
 
-proc parse(input: (seq[Token], bool, string)): (Node, bool, string) =
-  if input[1]: return (newBlockNode(), input[1], input[2])
+proc parse(input: (seq[Token], bool, string)): (Node, State, bool, string) =
+  if input[1]: return (newBlockNode(), newState(), input[1], input[2])
   
   let parser = newParser(input[0])
 
   parser.parse()
 
-  echo %parser.output
+  return (parser.output, parser.state, parser.errors > 0, "Failed to parse")
 
-  return (parser.output, parser.errors > 0, "Failed to parse")
+proc compile(input: (Node, State, bool, string)): (Node, bool, string) =
+  if input[2]: return (newBlockNode(), input[2], input[3])
 
-proc compile(input: (Node, bool, string)): (Node, bool, string) =
-  if input[1]: return (newBlockNode(), input[1], input[2])
-
-  let compiler = newCompiler(input[0])
+  let compiler = newCompiler(input[1], input[0])
 
   compiler.compile()
-
-  echo %compiler.output
 
   return (compiler.output, compiler.errors > 0, "Failed to compile")
 
@@ -1097,7 +1203,7 @@ proc assemble(input: (Node, bool, string)): (seq[byte], bool, string) =
 
   return (assembler.output, assembler.errors > 0, "Failed to assemble")
 
-proc read(input: (string, bool, string)): (seq[byte], bool, string) =
+proc readBytes(input: (string, bool, string)): (seq[byte], bool, string) =
   if input[1]: return (newSeq[byte](), input[1], input[2])
   
   let file = input[0].open()
@@ -1111,12 +1217,12 @@ proc read(input: (string, bool, string)): (seq[byte], bool, string) =
 
   file.close()
 
-proc text(input: (seq[byte], bool, string)): (string, bool, string) =
+proc readString(input: (string, bool, string)): (string, bool, string) =
   if input[1]: return ("", input[1], input[2])
 
-  result = (input[0].map(x => char(x)).join(""), input[1], input[2])
+  return (input[0].readFile(), false, "")
 
-proc write(input: (seq[byte], bool, string), output: string): (bool, string) =
+proc writeBytes(input: (seq[byte], bool, string), output: string): (bool, string) =
   if input[1]: return (input[1], input[2])
   
   let file = output.open(fmWrite)
@@ -1127,6 +1233,13 @@ proc write(input: (seq[byte], bool, string), output: string): (bool, string) =
     result = (false, "")
 
   file.close()
+
+proc writeString(input: (string, bool, string), output: string): (bool, string) =
+  if input[1]: return (input[1], input[2])
+  
+  output.writeFile(input[0])
+
+  return (false, "")
 
 proc interpret(input: (seq[byte], bool, string)): (bool, string) =
   if input[1]: return (input[1], input[2])
@@ -1161,8 +1274,7 @@ when isMainModule:
   elif options.has("r"):
     options.get("in")
            .exists()
-           .read()
-           .text()
+           .readString()
            .lex()
            .parse()
            .compile()
@@ -1170,20 +1282,30 @@ when isMainModule:
            .interpret()
            .display()
   elif options.has("c"):
-    options.get("in")
-           .exists()
-           .read()
-           .text()
-           .lex()
-           .parse()
-           .compile()
-           .assemble()
-           .write(options.get("out"))
-           .display()
+    if not options.has("target") or options.get("target") == "rasm":
+      options.get("in")
+            .exists()
+            .readString()
+            .lex()
+            .parse()
+            .compile()
+            .assemble()
+            .writeBytes(options.get("out"))
+            .display()
+    elif not options.has("target") or options.get("target") == "rsec":
+      options.get("in")
+            .exists()
+            .readString()
+            .lex()
+            .parse()
+            .compile()
+            .assemble()
+            .writeBytes(options.get("out"))
+            .display()
   elif options.has("e"):
     options.get("in")
            .exists()
-           .read()
+           .readBytes()
            .interpret()
            .display()
   elif options.has("d"):
@@ -1191,8 +1313,7 @@ when isMainModule:
     of ".rasm":
       options.get("in")
              .exists()
-             .read()
-             .text()
+             .readString()
              .lex()
              .parse()
              .compile()
@@ -1202,7 +1323,7 @@ when isMainModule:
     of ".rsec":
       options.get("in")
              .exists()
-             .read()
+             .readBytes()
              .debug()
              .display()
     else:
