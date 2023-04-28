@@ -4,69 +4,11 @@ from std/strutils import toUpper, split, join, alignLeft, indent, isEmptyOrWhite
 from std/sequtils import toSeq, filter, map, concat, deduplicate
 from std/setutils import toSet
 from std/os import commandLineParams, changeFileExt, splitFile, fileExists
-from std/parseutils import parseInt, parseHex, parseOct, parseBin
 from std/strformat import fmt
 from std/sugar import `=>`
 from std/json import `%`, `$`
 
-proc isInteger(input: string): bool =
-  var value = 0
-
-  if input.len() <= 2:
-    return parseInt(input, value) == input.len()
-
-  case input[0..1]:
-  of "0B", "0b":  (if input.parseBin(value) == input.len(): return true)
-  of "0X", "0x":  (if input.parseHex(value) == input.len(): return true)
-  of "0O", "0o":  (if input.parseOct(value) == input.len(): return true)
-  else:           (if input.parseInt(value) == input.len(): return true)
-
-proc asInteger(input: string): int =
-  if input.len() <= 2:
-    return if parseInt(input, result) < input.len(): 0 else: result
-
-  case input[0..1]:
-  of "0B", "0b":  (if input.parseBin(result) < input.len(): return 0)
-  of "0X", "0x":  (if input.parseHex(result) < input.len(): return 0)
-  of "0O", "0o":  (if input.parseOct(result) < input.len(): return 0)
-  else:           (if input.parseInt(result) < input.len(): return 0)
-
-proc isCharacter(input: string): bool =
-  if not (input[0] == '\'' and input[high input] == '\''):
-    return false
-  elif input[1] == '\\':
-    case input[2]:
-    of '0'..'9':
-      return (input[2..(high input) - 1]).isInteger()
-    of 'x':
-      return ("0x" & input[3..(high input) - 1]).isInteger()
-    of {'\\', '\'', '\"', 'n', 'r', 't', 'b', 'f'}:
-      return true
-    else:
-      return false
-  elif input[1] in {'\x20'..'\x7E'}:
-    return true
-
-proc asCharacter(input: string): char =
-  if not (input[0] == '\'' and input[high input] == '\''):
-    return '\x0'
-
-  if input[1] == '\\':
-    case input[2]:
-    of '0'..'9':  return char((input[2..(high input) - 1]).asInteger())
-    of 'x':       return char(("0x" & input[3..(high input) - 1]).asInteger())
-    of '\\':      return '\\'
-    of '\'':      return '\''
-    of '\"':      return '\"'
-    of 'n':       return '\n'
-    of 'r':       return '\r'
-    of 't':       return '\t'
-    of 'b':       return '\b'
-    of 'f':       return '\f'
-    else:         return '\0'
-
-  if input[1] in {'\x20'..'\x7E'}:
-    return input[1]
+import parseliteral
 
 type TokenKind = enum
   TK_C_IDENTIFIER
@@ -807,13 +749,16 @@ proc compile(this: Compiler, node: Node): Node =
     
     let condition = this.compile(node.whileCondition)
     
+    let label = newLabelNode(node.whileCondition.pos, $this.address)
+    this.state.env[label.labelName] = this.address
+    this.nxt()
+
     let jump = newInstructionNode(node.whileCondition.pos, TK_I_JUMP_FALSE)
     jump.instructionArguments.add(condition)
     this.nxt()
 
     let goto = newInstructionNode(node.whileCondition.pos, TK_I_GOTO)
-    goto.instructionArguments.add(newIntegerConstantNode(condition.pos, this.address))
-
+    goto.instructionArguments.add(newLabelRefNode(node.whileCondition.pos, label.labelName))
     this.nxt()
     
     let main = this.compile(node.whileBody)
@@ -823,6 +768,8 @@ proc compile(this: Compiler, node: Node): Node =
     result.blockBody.add(jump)
     result.blockBody.add(main)
     result.blockBody.add(goto)
+
+    result = this.compile(result)
   of NK_INSTRUCTION:
     if node.instructionIdentifier == TK_I_NOOP:
       result = nil
@@ -1049,21 +996,21 @@ proc debug(this: VirtualMachine): void =
         let i = input[2].asInteger()
 
         if i in {0x00..0x0E}:
-          this.say("Value of register ", i.toHex(), " = ", $this.rget(byte(i)).toHex())
+          this.say("Value of register ", byte(i).toHex(), " = ", $this.rget(byte(i)).toHex())
         else:
           this.say("Index must be in interval [0x00, 0x0F)")
       of "m", "memory":
         let i = input[2].asInteger()
           
         if i in {0x00..0xFE}:
-          this.say("Value of memory at ", i.toHex(), " = ", $this.mget(byte(i)).toHex())
+          this.say("Value of memory at ", byte(i).toHex(), " = ", $this.mget(byte(i)).toHex())
         else:
           this.say("Index must be in interval [0x00, 0xFF)")
       of "s", "side":
         let i = input[2].asInteger()
 
         if i in {0x00..0x05}:
-          this.say("Value of side ", i.toHex(), " = ", $this.sget(byte(i)).toHex())
+          this.say("Value of side ", byte(i).toHex(), " = ", $this.sget(byte(i)).toHex())
         else:
           this.say("Index must be in interval [0x00, 0x06)")
       else:

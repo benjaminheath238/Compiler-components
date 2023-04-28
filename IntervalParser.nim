@@ -1,38 +1,4 @@
-from std/parseutils import parseInt, parseHex, parseOct, parseBin
-
-proc isPosInteger(input: string): bool =
-  var value = 0
-
-  if input.len() <= 2:
-    return parseInt(input, value) == input.len()
-
-  case input[0..1]:
-  of "0B", "0b":  (if input.parseBin(value) == input.len(): return true)
-  of "0X", "0x":  (if input.parseHex(value) == input.len(): return true)
-  of "0O", "0o":  (if input.parseOct(value) == input.len(): return true)
-  else:           (if input.parseInt(value) == input.len(): return true)
-
-proc isInteger(input: string): bool =
-  if input[0] == '-':
-    return input[1..high input].isPosInteger()
-  else:
-    return input[0..high input].isPosInteger()
-
-proc asPosInteger(input: string): int =
-  if input.len() <= 2:
-    return if parseInt(input, result) < input.len(): 0 else: result
-
-  case input[0..1]:
-  of "0B", "0b":  (if input.parseBin(result) < input.len(): return 0)
-  of "0X", "0x":  (if input.parseHex(result) < input.len(): return 0)
-  of "0O", "0o":  (if input.parseOct(result) < input.len(): return 0)
-  else:           (if input.parseInt(result) < input.len(): return 0)
-
-proc asInteger(input: string): int =
-  if input[0] == '-':
-    return -input[1..high input].asPosInteger()
-  else:
-    return  input[0..high input].asPosInteger()
+import parseliteral
 
 type TokenKind = enum
   TK_INTEGER
