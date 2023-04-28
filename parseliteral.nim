@@ -31,6 +31,8 @@ proc asPosInteger(input: string): int =
 proc asInteger*(input: string): int =
   if input[0] == '-':
     return -input[1..high input].asPosInteger()
+  if input[0] == '+':
+    return  input[1..high input].asPosInteger()
   else:
     return  input[0..high input].asPosInteger()
 
